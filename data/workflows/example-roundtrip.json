@@ -1,0 +1,38 @@
+{
+  "1": {
+    "inputs": {
+      "prompt": "",
+      "resolution": "1k",
+      "strength": 0.65,
+      "batch_count": 1,
+      "seed": 42,
+      "params_json": "{}",
+      "image_1_file": "",
+      "image_2_file": "",
+      "image_3_file": "",
+      "image_4_file": "",
+      "image_5_file": "",
+      "image_6_file": "",
+      "mask_image_file": "",
+      "image_count": 1
+    },
+    "class_type": "Adv_Request",
+    "_meta": {
+      "title": "PS Bridge Request"
+    }
+  },
+  "2": {
+    "inputs": {
+      "filename_prefix": "PSBridge",
+      "request_id": "",
+      "image": [
+        "1",
+        0
+      ]
+    },
+    "class_type": "Adv_SendToPS",
+    "_meta": {
+      "title": "Send To Photoshop"
+    }
+  }
+}

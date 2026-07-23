@@ -1,0 +1,7 @@
+from __future__ import annotations
+
+
+BRIDGE_PROTOCOL_VERSION = 1
+BRIDGE_MAX_IMAGES = 6
+BRIDGE_MAX_MESSAGE_BYTES = 128 * 1024 * 1024
+BRIDGE_SUPPORTED_ENCODINGS = ("json", "msgpack")
