@@ -27,15 +27,8 @@ PLACEHOLDER_SIZE = (64, 64)
 ENCODED_IMAGE_KEYS = ("png", "image_png", "jpg", "jpeg", "image_jpg", "image_jpeg", "webp", "image_webp")
 RAW_IMAGE_KEYS = ("rgba", "rgb", "imageData", "data", "image")
 SLOT_GROUPS = ("prompt", "seed", "float", "int", "boolean")
-SLOT_NODE_GROUPS = {
-    "PSBridgePrompt": "prompt",
-    "PSBridgeSeed": "seed",
-    "PSBridgeFloat": "float",
-    "PSBridgeInt": "int",
-    "PSBridgeBoolean": "boolean",
-}
-VPLUGINS_PARAM_OBJECT_KEYS = ("options", "settings", "params")
-VPLUGINS_TOP_LEVEL_PARAM_KEYS = (
+REQUEST_PARAM_OBJECT_KEYS = ("options", "settings", "params")
+REQUEST_TOP_LEVEL_PARAM_KEYS = (
     "resolution",
     "batchCount",
     "batch_count",
@@ -49,6 +42,7 @@ VPLUGINS_TOP_LEVEL_PARAM_KEYS = (
 )
 ADV_REQUEST_MAX_IMAGES = BRIDGE_MAX_IMAGES
 ADV_REQUEST_MAX_BATCH_COUNT = 4
+SEED_MAX = 0xFFFFFFFFFFFFFFFF
 EXECUTION_MODE_AUTO = "auto"
 EXECUTION_MODE_CURRENT_GRAPH = "current_graph"
 EXECUTION_MODE_API_WORKFLOW = "api_workflow"
@@ -140,14 +134,20 @@ def _non_empty_slot_params(slots: Any) -> dict[str, Any]:
 
 def _params_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     params: dict[str, Any] = {}
-    for key in VPLUGINS_PARAM_OBJECT_KEYS:
+    for key in REQUEST_PARAM_OBJECT_KEYS:
         value = payload.get(key)
         if isinstance(value, dict):
             params.update({str(item_key): item_value for item_key, item_value in value.items()})
-    for key in VPLUGINS_TOP_LEVEL_PARAM_KEYS:
+    for key in REQUEST_TOP_LEVEL_PARAM_KEYS:
         if key in payload and payload[key] is not None:
             params[key] = payload[key]
-    return params or _non_empty_slot_params(payload.get("slots"))
+    for group, values in _non_empty_slot_params(payload.get("slots")).items():
+        existing = params.get(group)
+        params[group] = {
+            **(existing if isinstance(existing, dict) else {}),
+            **values,
+        }
+    return params
 
 
 def _single_value(value: Any) -> Any:
@@ -171,24 +171,21 @@ def _param_value(params: dict[str, Any], *keys: str) -> Any:
 
 
 def _int_value(value: Any, fallback: int) -> int:
+    if isinstance(value, int):
+        return value
     try:
-        return _js_round(float(value))
-    except (TypeError, ValueError):
+        text = str(value).strip()
+        try:
+            return int(text, 10)
+        except ValueError:
+            number = float(text)
+            return math.floor(number + 0.5) if math.isfinite(number) else fallback
+    except (TypeError, ValueError, OverflowError):
         return fallback
 
 
 def _clamp_adv_batch_count(value: Any) -> int:
     return max(1, min(_int_value(value, 1), ADV_REQUEST_MAX_BATCH_COUNT))
-
-
-def vplugins_request_from_payload(payload: dict[str, Any]) -> dict[str, str]:
-    params = _params_from_payload(payload)
-    return {
-        "main_image": "",
-        "mask_image": "",
-        "prompt": _prompt_from_payload(payload),
-        "params_json": json.dumps(params, ensure_ascii=False, separators=(",", ":"), default=_json_default),
-    }
 
 
 def adv_request_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -207,7 +204,10 @@ def adv_request_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         request.get("batch_count", request.get("batchCount", payload.get("batch_count", payload.get("batchCount", _param_value(params, "batch_count", "batchCount"))))),
     )
     seed = _int_value(request.get("seed", payload.get("seed", _param_value(params, "seed", "MAIN"))), 42)
-    strength = _finite_float(request.get("strength", payload.get("strength", _param_value(params, "strength"))), 0.65)
+    strength = max(
+        0.0,
+        min(1.0, _finite_float(request.get("strength", payload.get("strength", _param_value(params, "strength"))), 0.65)),
+    )
     params_json = request.get("params_json", request.get("paramsJson"))
     if params_json is None:
         params_json = json.dumps(params, ensure_ascii=False, separators=(",", ":"), default=_json_default)
@@ -216,10 +216,10 @@ def adv_request_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "image_count": image_count,
         "prompt": str(request.get("prompt", _prompt_from_payload(payload)) or ""),
-        "resolution": str(request.get("resolution", payload.get("resolution", _param_value(params, "resolution") or "1k")) or ""),
+        "resolution": str(request.get("resolution", payload.get("resolution", _param_value(params, "resolution") or "1k")) or "1k"),
         "strength": strength,
         "batch_count": batch_count,
-        "seed": max(0, seed),
+        "seed": max(0, min(seed, SEED_MAX)),
         "params_json": str(params_json or "{}"),
     }
 
@@ -403,10 +403,6 @@ def _finite_float(value: Any, fallback: float) -> float:
     return number
 
 
-def _js_round(value: float) -> int:
-    return math.floor(value + 0.5)
-
-
 def image_slot_id(value: Any) -> str:
     text = str(value or "").strip()
     normalized = "_".join(text.upper().split())
@@ -432,34 +428,6 @@ def image_slot_id(value: Any) -> str:
     return "IMAGE_1"
 
 
-def constrain_float_slot_value(value: Any, fallback: Any, min_value: Any, max_value: Any, step: Any) -> float:
-    lower = _finite_float(min_value, 0.0)
-    upper = _finite_float(max_value, lower)
-    if lower > upper:
-        lower, upper = upper, lower
-    step_value = abs(_finite_float(step, 0.0))
-    fallback_value = _finite_float(fallback, lower)
-    constrained = max(lower, min(_finite_float(value, fallback_value), upper))
-    if step_value > 0:
-        constrained = lower + _js_round((constrained - lower) / step_value) * step_value
-    constrained = max(lower, min(constrained, upper))
-    return round(constrained, 12)
-
-
-def constrain_int_slot_value(value: Any, fallback: Any, min_value: Any, max_value: Any, step: Any) -> int:
-    lower = _js_round(_finite_float(min_value, 0.0))
-    upper = _js_round(_finite_float(max_value, float(lower)))
-    if lower > upper:
-        lower, upper = upper, lower
-    step_value = max(1, _js_round(abs(_finite_float(step, 1.0))))
-    fallback_value = _js_round(_finite_float(fallback, float(lower)))
-    constrained = max(lower, min(_js_round(_finite_float(value, float(fallback_value))), upper))
-    if step_value > 0:
-        constrained = lower + _js_round((constrained - lower) / step_value) * step_value
-    constrained = max(lower, min(constrained, upper))
-    return int(constrained)
-
-
 def is_api_prompt_workflow(workflow: dict[str, Any]) -> bool:
     if not isinstance(workflow, dict):
         return False
@@ -471,7 +439,7 @@ def is_api_prompt_workflow(workflow: dict[str, Any]) -> bool:
     )
 
 
-def migrated_workflow_for_feature(feature_id: str) -> dict[str, Any]:
+def workflow_for_feature(feature_id: str) -> dict[str, Any]:
     fid = validate_workflow_id(feature_id)
     path = WORKFLOWS_DIR / f"{fid}.json"
     if not path.exists():
@@ -545,34 +513,6 @@ def execution_mode_for_payload(payload: dict[str, Any], feature_id: str) -> str:
     return manifest_mode or EXECUTION_MODE_AUTO
 
 
-def workflow_slot_ids_for_feature(feature_id: str) -> dict[str, list[str]]:
-    workflow = migrated_workflow_for_feature(feature_id)
-    groups: dict[str, list[str]] = {group: [] for group in SLOT_GROUPS}
-    if isinstance(workflow.get("nodes"), list):
-        entries = [(node.get("type", ""), node) for node in workflow["nodes"] if isinstance(node, dict)]
-    else:
-        entries = [
-            (node.get("class_type", ""), node)
-            for node in workflow.values()
-            if isinstance(node, dict)
-        ]
-
-    for class_type, node in entries:
-        group = SLOT_NODE_GROUPS.get(class_type)
-        if not group:
-            continue
-        inputs = node.get("inputs", {})
-        slot_id = inputs.get("slot_id") if isinstance(inputs, dict) else None
-        if not slot_id and isinstance(node.get("widgets_values"), list):
-            widgets_values = node["widgets_values"]
-            slot_id = widgets_values[0] if widgets_values else None
-        if slot_id:
-            slot_id = str(slot_id)
-            if slot_id not in groups[group]:
-                groups[group].append(slot_id)
-    return groups
-
-
 def _slot_key(value: Any) -> str:
     return "".join(char for char in str(value).lower() if char.isalnum())
 
@@ -610,7 +550,7 @@ def normalize_slots_for_payload(payload: dict[str, Any], workflow_slots: dict[st
             elif value is not None and len(workflow_slots.get(group, [])) == 1:
                 put(group, workflow_slots[group][0], value)
 
-    # 2. Direct values whose keys match a PSBridge node slot_id, e.g. width or batchCount.
+    # 2. Direct values whose keys match an explicitly supplied protocol slot ID.
     for source in sources:
         for group in SLOT_GROUPS:
             for slot_id in workflow_slots.get(group, []):
@@ -811,14 +751,9 @@ def ingest_run_payload(
             )
         selection_meta = selections_meta.get("IMAGE_1")
 
-    if workflow_slots is None:
-        if require_workflow:
-            workflow_slots = workflow_slot_ids_for_feature(feature_id)
-        else:
-            try:
-                workflow_slots = workflow_slot_ids_for_feature(feature_id)
-            except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError):
-                workflow_slots = {group: [] for group in SLOT_GROUPS}
+    if require_workflow:
+        workflow_for_feature(feature_id)
+    workflow_slots = workflow_slots or {group: [] for group in SLOT_GROUPS}
 
     state = {
         "request_id": request_id,
@@ -834,7 +769,6 @@ def ingest_run_payload(
         "selection": selection_meta,
         "selections": selections_meta,
         "slots": normalize_slots_for_payload(message, workflow_slots),
-        "vplugins_request": vplugins_request_from_payload(message),
         "adv_request": adv_request_from_payload(message),
         "updated_at": time.time(),
     }
@@ -851,15 +785,6 @@ def normalize_slots(value: Any) -> dict[str, dict[str, Any]]:
         if isinstance(incoming, dict):
             groups[group] = {str(k): v for k, v in incoming.items()}
     return groups
-
-
-def read_slot(group: str, slot_id: str, fallback: Any) -> Any:
-    state = load_state()
-    slots = state.get("slots") or {}
-    group_values = slots.get(group) or {}
-    if isinstance(group_values, dict) and slot_id in group_values:
-        return group_values[slot_id]
-    return fallback
 
 
 def load_bridge_image(slot_id: str, fallback_width: int, fallback_height: int) -> ImageLoadResult:

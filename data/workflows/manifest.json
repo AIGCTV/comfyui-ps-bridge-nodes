@@ -4,7 +4,7 @@
     {
       "feature_id": "example-roundtrip",
       "name": "PS Bridge Roundtrip Example",
-      "description": "Public minimal API-format example using Adv_Request and Adv_SendToPS."
+      "description": "Public synthetic API-format example using Adv_Request and Adv_SendToPS."
     }
   ]
 }

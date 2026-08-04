@@ -81,7 +81,7 @@ class BridgeManager:
 
     def workflow_requires_api_prompt_client(self, feature_id: Any) -> bool:
         try:
-            return storage.is_api_prompt_workflow(storage.migrated_workflow_for_feature(feature_id))
+            return storage.is_api_prompt_workflow(storage.workflow_for_feature(feature_id))
         except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError):
             return False
 
@@ -164,7 +164,6 @@ class BridgeManager:
             "selection": state["selection"],
             "selections": state.get("selections", {}),
             "adv_request": state.get("adv_request"),
-            "vplugins_request": state.get("vplugins_request"),
             "updated_at": state.get("updated_at"),
         }
 
@@ -327,16 +326,7 @@ class BridgeManager:
 
         if msg_type == "slots_update":
             state = storage.load_state()
-            feature_id = (
-                payload.get("feature_id")
-                or payload.get("featureId")
-                or state.get("feature_id")
-            )
-            try:
-                workflow_slots = storage.workflow_slot_ids_for_feature(feature_id)
-            except (FileNotFoundError, ValueError):
-                workflow_slots = None
-            slots = storage.normalize_slots_for_payload(payload, workflow_slots or {})
+            slots = storage.normalize_slots_for_payload(payload, {})
             state["slots"] = storage.merge_slots(state.get("slots"), slots)
             storage.save_state(state)
             comfy_client_id = self.primary_role_client("comfy")

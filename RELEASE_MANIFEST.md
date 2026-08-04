@@ -1,8 +1,8 @@
 # Release manifest
 
-Release version: `0.1.0`
+Release version: `0.2.0`
 
-Release date: `2026-07-23`
+Release date: `2026-08-04`
 
 The public release is assembled from an explicit allowlist. It contains:
 
@@ -19,10 +19,12 @@ The release intentionally excludes:
 - Vplugins and every other companion application's source code
 - Private production workflows, models, prompts, generated images, and caches
 - Local paths, `.env` files, credentials, access tokens, and development notes
+- Internal integration and research documents, including the private files under
+  `docs/` that are not named above
 - Git history from the private development repository
 
 Suggested source archive name:
-`aigctv-ps-bridge-nodes-0.1.0-20260723.zip`.
+`aigctv-ps-bridge-nodes-0.2.0-20260804.zip`.
 
 This project is distributed as source code; binary signing is not applicable.
 Git tags and GitHub release assets should be created from the public repository.

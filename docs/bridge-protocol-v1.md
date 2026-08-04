@@ -70,5 +70,7 @@ Clients should use request IDs to correlate `run_workflow`, progress,
 
 ## Compatibility
 
-Canonical workflow node IDs are `Adv_Request` and `Adv_SendToPS`. Legacy node
-IDs remain registered so existing workflows continue to load.
+The only supported workflow node IDs are `Adv_Request` and `Adv_SendToPS`.
+Former node IDs are not registered, aliased, or migrated; workflows that use
+them must be rebuilt with the two current nodes. The `run_workflow`,
+`slots_update`, and `slots_snapshot` message types remain part of protocol v1.

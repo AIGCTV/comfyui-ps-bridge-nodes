@@ -1,5 +1,7 @@
 export const ADV_REQUEST_CLASS = "Adv_Request";
 export const ADV_REQUEST_MAX_IMAGES = 6;
+export const ADV_REQUEST_WIDGET_SCHEMA_VERSION = 2;
+export const ADV_REQUEST_WIDGET_SCHEMA_PROPERTY = "ps_bridge_widget_schema";
 
 export const ADV_REQUEST_BACKEND_OUTPUTS = [
   ["IMAGE_1", "IMAGE"],
@@ -29,56 +31,25 @@ export const ADV_REQUEST_SERIALIZED_WIDGET_ORDER = [
   "strength",
   "batch_count",
   "seed",
-  "params_json",
-  "image_1_file",
-  "image_2_file",
-  "image_3_file",
-  "image_4_file",
-  "image_5_file",
-  "image_6_file",
-  "mask_image_file",
+  "control_after_generate",
 ];
 
-export const ADV_REQUEST_FIRST_VERSION_WIDGET_ORDER = [
-  "image_count",
-  "prompt",
-  "resolution",
-  "strength",
-  "batch_count",
-  "send_to_ps",
-  "params_json",
-  "image_1_file",
-  "image_2_file",
-  "image_3_file",
-  "image_4_file",
-  "image_5_file",
-  "image_6_file",
-  "mask_image_file",
-];
-
-const ADV_REQUEST_WIDGET_DEFAULTS = {
+export const ADV_REQUEST_WIDGET_DEFAULTS = {
   image_count: 1,
   prompt: "",
   resolution: "1k",
   strength: 0.65,
   batch_count: 1,
   seed: 42,
-  params_json: "{}",
-  image_1_file: "",
-  image_2_file: "",
-  image_3_file: "",
-  image_4_file: "",
-  image_5_file: "",
-  image_6_file: "",
-  mask_image_file: "",
+  control_after_generate: "randomize",
 };
+
+const ADV_REQUEST_CONTROL_MODES = new Set(["fixed", "increment", "decrement", "randomize"]);
+const ADV_REQUEST_MAX_BATCH_COUNT = 4;
+const ADV_REQUEST_MAX_SEED = Number.MAX_SAFE_INTEGER;
 
 export function outputName(output) {
   return String(output?.name || output?.localized_name || output?.label || "").toUpperCase();
-}
-
-export function outputTypeForBackendIndex(index) {
-  return ADV_REQUEST_BACKEND_OUTPUTS[index]?.[1] || "";
 }
 
 export function outputsMatchBackend(outputs = []) {
@@ -86,125 +57,79 @@ export function outputsMatchBackend(outputs = []) {
     && ADV_REQUEST_BACKEND_OUTPUTS.every(([name], index) => outputName(outputs[index]) === name);
 }
 
-function serializedWidgetNamesFromNodeData(nodeData) {
-  const names = [];
-  for (const input of nodeData?.inputs || []) {
-    const name = input?.widget?.name;
-    if (name && !names.includes(name)) {
-      names.push(name);
-    }
+function finiteNumber(value, fallback) {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : fallback;
   }
-  return names;
-}
-
-function widgetValueMapFromNodeData(nodeData) {
-  const values = Array.isArray(nodeData?.widgets_values) ? nodeData.widgets_values : [];
-  let names = serializedWidgetNamesFromNodeData(nodeData);
-  if (!names.length || names.includes("send_to_ps") || !names.includes("seed")) {
-    names = ADV_REQUEST_FIRST_VERSION_WIDGET_ORDER;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
   }
-  const mapped = {};
-  names.forEach((name, index) => {
-    if (name && values[index] !== undefined) {
-      mapped[name] = values[index];
-    }
-  });
-  return mapped;
+  return fallback;
 }
 
-export function normalizedAdvRequestWidgetValues(nodeData) {
-  const mapped = widgetValueMapFromNodeData(nodeData);
-  return ADV_REQUEST_SERIALIZED_WIDGET_ORDER.map((name) => {
-    return mapped[name] !== undefined ? mapped[name] : ADV_REQUEST_WIDGET_DEFAULTS[name];
-  });
+function clampedInteger(value, fallback, minimum, maximum) {
+  const number = finiteNumber(value, fallback);
+  return Math.max(minimum, Math.min(maximum, Math.round(number)));
 }
 
-export function migrateAdvRequestWorkflowData(workflow, className = ADV_REQUEST_CLASS) {
+export function normalizeAdvRequestWidgetValues(values) {
+  const source = Array.isArray(values) ? values : [];
+  const prompt = typeof source[1] === "string" ? source[1] : ADV_REQUEST_WIDGET_DEFAULTS.prompt;
+  const resolution = typeof source[2] === "string" && source[2].trim()
+    ? source[2]
+    : ADV_REQUEST_WIDGET_DEFAULTS.resolution;
+  const control = ADV_REQUEST_CONTROL_MODES.has(source[6])
+    ? source[6]
+    : ADV_REQUEST_WIDGET_DEFAULTS.control_after_generate;
+  return [
+    clampedInteger(source[0], ADV_REQUEST_WIDGET_DEFAULTS.image_count, 1, ADV_REQUEST_MAX_IMAGES),
+    prompt,
+    resolution,
+    Math.max(0, Math.min(1, finiteNumber(source[3], ADV_REQUEST_WIDGET_DEFAULTS.strength))),
+    clampedInteger(source[4], ADV_REQUEST_WIDGET_DEFAULTS.batch_count, 1, ADV_REQUEST_MAX_BATCH_COUNT),
+    clampedInteger(source[5], ADV_REQUEST_WIDGET_DEFAULTS.seed, 0, ADV_REQUEST_MAX_SEED),
+    control,
+  ];
+}
+
+export function defaultAdvRequestWidgetValues() {
+  return ADV_REQUEST_SERIALIZED_WIDGET_ORDER.map((name) => ADV_REQUEST_WIDGET_DEFAULTS[name]);
+}
+
+export function normalizeAdvRequestWidgetPatch(patch) {
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) return {};
+  const normalized = {};
+  ADV_REQUEST_SERIALIZED_WIDGET_ORDER.forEach((name, index) => {
+    if (!Object.prototype.hasOwnProperty.call(patch, name) || patch[name] === undefined) return;
+    const values = defaultAdvRequestWidgetValues();
+    values[index] = patch[name];
+    normalized[name] = normalizeAdvRequestWidgetValues(values)[index];
+  });
+  return normalized;
+}
+
+export function sanitizeAdvRequestWorkflowData(workflow, className = ADV_REQUEST_CLASS) {
   if (!workflow || typeof workflow !== "object" || !Array.isArray(workflow.nodes)) {
     return workflow;
   }
   for (const nodeData of workflow.nodes) {
-    if (!nodeData || nodeData.type !== className || !Array.isArray(nodeData.widgets_values)) {
+    if (!nodeData || nodeData.type !== className) {
       continue;
     }
-    const names = serializedWidgetNamesFromNodeData(nodeData);
-    if (names.includes("send_to_ps") || !names.includes("seed") || nodeData.widgets_values.length !== ADV_REQUEST_SERIALIZED_WIDGET_ORDER.length) {
-      nodeData.widgets_values = normalizedAdvRequestWidgetValues(nodeData);
-    }
+    const properties = nodeData.properties && typeof nodeData.properties === "object"
+      ? nodeData.properties
+      : {};
+    const currentSchema = properties[ADV_REQUEST_WIDGET_SCHEMA_PROPERTY] === ADV_REQUEST_WIDGET_SCHEMA_VERSION;
+    nodeData.widgets_values = currentSchema
+      && Array.isArray(nodeData.widgets_values)
+      && nodeData.widgets_values.length === ADV_REQUEST_SERIALIZED_WIDGET_ORDER.length
+      ? normalizeAdvRequestWidgetValues(nodeData.widgets_values)
+      : defaultAdvRequestWidgetValues();
+    nodeData.properties = {
+      ...properties,
+      [ADV_REQUEST_WIDGET_SCHEMA_PROPERTY]: ADV_REQUEST_WIDGET_SCHEMA_VERSION,
+    };
   }
   return workflow;
-}
-
-function normalizedType(value) {
-  return String(value || "").toUpperCase();
-}
-
-function visibleBackendIndexesContain(visibleBackendIndexes, backendIndex) {
-  return visibleBackendIndexes.some((index) => Number(index) === Number(backendIndex));
-}
-
-export function outputNameForTargetInput(targetInputName, targetNodeClass = "") {
-  const name = String(targetInputName || "").toLowerCase();
-  if (name === "width") return "WIDTH";
-  if (name === "height") return "HEIGHT";
-  if (name === "batch_size") return "BATCH_COUNT";
-  if (name === "seed") return "SEED";
-  if (name === "text" && String(targetNodeClass || "").includes("CLIPTextEncode")) {
-    return "PROMPT";
-  }
-  return null;
-}
-
-export function normalizeAdvRequestLinkSlot({
-  originSlot,
-  outputs = [],
-  visibleBackendIndexes = [],
-  targetInputName = "",
-  targetNodeClass = "",
-  targetInputType = "",
-  linkType = "",
-  preferVisibleSlot = false,
-} = {}) {
-  const slot = Number(originSlot);
-  if (!Number.isInteger(slot)) {
-    return ADV_REQUEST_BACKEND_OUTPUT_INDEX.get(String(originSlot || "").toUpperCase()) ?? originSlot;
-  }
-
-  if (!outputsMatchBackend(outputs)) {
-    const backendIndex = ADV_REQUEST_BACKEND_OUTPUT_INDEX.get(outputName(outputs[slot]));
-    if (backendIndex !== undefined) {
-      return backendIndex;
-    }
-  }
-
-  const visibleBackendIndex = visibleBackendIndexes[slot];
-  if (visibleBackendIndex === undefined || visibleBackendIndex === slot) {
-    if (preferVisibleSlot && visibleBackendIndex === slot) {
-      return slot;
-    }
-  } else if (preferVisibleSlot && !visibleBackendIndexesContain(visibleBackendIndexes, slot)) {
-    return visibleBackendIndex;
-  }
-
-  const targetOutputName = outputNameForTargetInput(targetInputName, targetNodeClass);
-  const targetOutputIndex = ADV_REQUEST_BACKEND_OUTPUT_INDEX.get(targetOutputName);
-  if (targetOutputIndex !== undefined) {
-    return targetOutputIndex;
-  }
-
-  if (visibleBackendIndex === undefined || visibleBackendIndex === slot) {
-    return slot;
-  }
-
-  const expectedType = normalizedType(targetInputType || linkType);
-  if (!expectedType || expectedType === "*") {
-    return slot;
-  }
-
-  const currentType = normalizedType(outputs[slot]?.type || outputTypeForBackendIndex(slot));
-  const visibleType = normalizedType(outputTypeForBackendIndex(visibleBackendIndex));
-  if (visibleType === expectedType && currentType !== expectedType) {
-    return visibleBackendIndex;
-  }
-  return slot;
 }
