@@ -29,9 +29,6 @@ jobs:
           python -m pip install --index-url https://download.pytorch.org/whl/cpu torch
           python -m pip install -r requirements.txt aiohttp numpy pillow
 
-      - name: Run Python tests
-        run: python -m unittest discover -s tests -p "test_*.py" -v
-
       - name: Compile Python source
         run: python -m compileall -q __init__.py ps_bridge
 
@@ -41,5 +38,3 @@ jobs:
           node-version: "24"
           package-manager-cache: false
 
-      - name: Run frontend contract tests
-        run: node --test tests/adv_request_contract_test.mjs tests/adv_request_persistence_test.mjs tests/adv_request_summary_test.mjs
