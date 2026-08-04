@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -11,10 +12,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image, ImageOps
-from typing_extensions import override
-
 import folder_paths
-from comfy_api.latest import ComfyExtension, io, ui
+from comfy_api.latest import io, ui
 
 from . import storage
 from .manager import manager
@@ -26,16 +25,6 @@ CATEGORY = "PS Bridge"
 SEED_MAX = 0xFFFFFFFFFFFFFFFF
 ADV_REQUEST_MAX_IMAGES = BRIDGE_MAX_IMAGES
 ADV_REQUEST_MAX_BATCH_COUNT = 4
-VPLUGINS_BRIDGE_MARKERS = {
-    "bridge",
-    "latest",
-    "latest_ps",
-    "ps_bridge",
-    "ps_bridge_latest",
-    "__bridge__",
-    "__ps_bridge__",
-    "__latest_ps_input__",
-}
 INLINE_RENDER_IMAGE_ENV = "PS_BRIDGE_RENDER_INLINE_IMAGE"
 
 
@@ -53,25 +42,16 @@ def _first_present(source: dict[str, Any], *keys: str) -> Any:
 def _coerce_int(value, fallback: int = 0) -> int:
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return fallback
 
 
 def _coerce_float(value, fallback: float = 0.0) -> float:
     try:
-        return float(value)
+        parsed = float(value)
+        return parsed if math.isfinite(parsed) else fallback
     except (TypeError, ValueError):
         return fallback
-
-
-def _coerce_bool(value, fallback: bool = False) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on", "enabled", "enable"}
-    if value is None:
-        return fallback
-    return bool(value)
 
 
 def _resize_alpha(alpha: torch.Tensor, image: torch.Tensor) -> torch.Tensor:
@@ -125,23 +105,6 @@ def _clean_text(value: str | None) -> str:
     return str(value or "").strip()
 
 
-def _is_explicit_bridge_marker(value: str | None) -> bool:
-    text = _clean_text(value)
-    marker = text.split(":", 1)[0].strip().lower()
-    return marker in VPLUGINS_BRIDGE_MARKERS
-
-
-def _uses_bridge_source(value: str | None) -> bool:
-    return not _clean_text(value) or _is_explicit_bridge_marker(value)
-
-
-def _bridge_slot_id(value: str | None) -> str:
-    text = _clean_text(value)
-    if ":" in text and _is_explicit_bridge_marker(text):
-        return storage.image_slot_id(text.split(":", 1)[1])
-    return storage.image_slot_id(text)
-
-
 def _input_file_path(filename: str) -> Path:
     text = _clean_text(filename)
     if not text:
@@ -150,7 +113,7 @@ def _input_file_path(filename: str) -> Path:
     path = Path(folder_paths.get_annotated_filepath(text)).resolve()
     input_dir = Path(folder_paths.get_input_directory()).resolve()
     if path != input_dir and input_dir not in path.parents:
-        raise ValueError("VpluginsRequest only loads files from the ComfyUI input directory")
+        raise ValueError("Adv_Request only loads files from the ComfyUI input directory")
     if not path.exists():
         raise FileNotFoundError(f"Input image not found: {text}")
     return path
@@ -318,7 +281,7 @@ class AdvRequest(io.ComfyNode):
         ]
         return io.Schema(
             node_id="Adv_Request",
-            display_name="Adv Request",
+            display_name="PS Bridge Send To ComfyUI",
             category=CATEGORY,
             description="Official PS plugin request entry node for mapped local ComfyUI and RunningHub workflows.",
             inputs=[
@@ -362,7 +325,6 @@ class AdvRequest(io.ComfyNode):
         strength: float = 0.65,
         batch_count: int = 1,
         seed: int = 42,
-        send_to_ps: bool | None = None,
         params_json: str = "{}",
         image_1_file: str = "",
         image_2_file: str = "",
@@ -407,7 +369,7 @@ class AdvRequest(io.ComfyNode):
 
         batch = _clamp_batch_count(batch_count)
         seed_value = max(0, min(_coerce_int(seed, 42), SEED_MAX))
-        strength_value = _coerce_float(strength, 0.65)
+        strength_value = max(0.0, min(1.0, _coerce_float(strength, 0.65)))
         merged_params_json = _canonical_params_json(
             params_json,
             image_count=count,
@@ -453,7 +415,7 @@ class AdvRequest(io.ComfyNode):
             count,
             str(kwargs.get("prompt") or ""),
             str(kwargs.get("resolution") or ""),
-            _coerce_float(kwargs.get("strength"), 0.65),
+            max(0.0, min(1.0, _coerce_float(kwargs.get("strength"), 0.65))),
             _clamp_batch_count(kwargs.get("batch_count", 1)),
             _coerce_int(kwargs.get("seed"), 42),
             str(kwargs.get("params_json") or "{}"),
@@ -463,147 +425,12 @@ class AdvRequest(io.ComfyNode):
         )
 
 
-class VpluginsRequest(io.ComfyNode):
-    @classmethod
-    def define_schema(cls) -> io.Schema:
-        return io.Schema(
-            node_id="VpluginsRequest",
-            display_name="Vplugins Request",
-            category=CATEGORY,
-            description="Unified API workflow entry node for local ComfyUI API, RunningHub, and PS Bridge debug runs.",
-            inputs=[
-                io.String.Input(
-                    "main_image",
-                    default="",
-                    tooltip="ComfyUI input filename from /upload/image. Leave empty in Bridge debug mode.",
-                ),
-                io.String.Input(
-                    "mask_image",
-                    default="",
-                    tooltip="Optional ComfyUI input filename for the selection mask.",
-                ),
-                io.String.Input("prompt", default="", multiline=True, dynamic_prompts=True),
-                io.String.Input("params_json", default="{}", multiline=True),
-            ],
-            outputs=[
-                io.Image.Output("image", display_name="IMAGE"),
-                io.Mask.Output("mask", display_name="MASK"),
-                io.String.Output("prompt", display_name="PROMPT"),
-                io.String.Output("params_json", display_name="PARAMS_JSON"),
-                io.Int.Output("width", display_name="WIDTH"),
-                io.Int.Output("height", display_name="HEIGHT"),
-                io.Boolean.Output("has_mask", display_name="HAS_MASK"),
-            ],
-        )
-
-    @classmethod
-    def execute(
-        cls,
-        main_image: str = "",
-        mask_image: str = "",
-        prompt: str = "",
-        params_json: str = "{}",
-    ) -> io.NodeOutput:
-        main_uses_bridge = _uses_bridge_source(main_image)
-        if main_uses_bridge:
-            loaded = storage.load_bridge_image(_bridge_slot_id(main_image), 512, 512)
-        else:
-            loaded = _load_input_image(main_image)
-
-        image = loaded.image
-        width = int(loaded.width)
-        height = int(loaded.height)
-        mask = _full_mask(image)
-        has_mask = False
-
-        if _clean_text(mask_image):
-            if _is_explicit_bridge_marker(mask_image):
-                mask_slot_id = _bridge_slot_id(mask_image)
-                bridge_loaded = loaded if main_uses_bridge and _bridge_slot_id(main_image) == mask_slot_id else storage.load_bridge_image(mask_slot_id, width, height)
-                if _bridge_selection_available(mask_slot_id):
-                    mask = _resize_alpha(bridge_loaded.selection, image)
-                    has_mask = True
-            else:
-                mask = _load_input_mask(mask_image, width, height, image)
-                has_mask = True
-        elif main_uses_bridge and _bridge_selection_available(_bridge_slot_id(main_image)):
-            mask = _resize_alpha(loaded.selection, image)
-            has_mask = True
-
-        return io.NodeOutput(
-            image,
-            mask,
-            str(prompt or ""),
-            str(params_json or "{}"),
-            width,
-            height,
-            has_mask,
-        )
-
-    @classmethod
-    def fingerprint_inputs(
-        cls,
-        main_image: str = "",
-        mask_image: str = "",
-        prompt: str = "",
-        params_json: str = "{}",
-    ) -> tuple[str, str, str, str, str, str]:
-        main_uses_bridge = _uses_bridge_source(main_image)
-        mask_uses_bridge = _is_explicit_bridge_marker(mask_image) or (main_uses_bridge and not _clean_text(mask_image))
-        main_fingerprint = storage.latest_fingerprint() if main_uses_bridge else _input_file_fingerprint(main_image)
-        mask_fingerprint = storage.latest_fingerprint() if mask_uses_bridge else _input_file_fingerprint(mask_image)
-        return (
-            _clean_text(main_image),
-            _clean_text(mask_image),
-            str(prompt or ""),
-            str(params_json or "{}"),
-            main_fingerprint,
-            mask_fingerprint,
-        )
-
-
-class PSBridgeImageInput(io.ComfyNode):
-    @classmethod
-    def define_schema(cls) -> io.Schema:
-        return io.Schema(
-            node_id="PSBridgeImageInput",
-            display_name="PS Bridge Image Input",
-            category=CATEGORY,
-            description="Loads the latest image, selection mask, alpha, width and height sent by Photoshop.",
-            not_idempotent=True,
-            inputs=[
-                io.Combo.Input(
-                    "image_index",
-                    options=list(storage.IMAGE_SLOT_LABELS),
-                    default=storage.IMAGE_SLOT_LABELS[0],
-                    tooltip="Select the Photoshop image to read. Image 1 is compatible with legacy MAIN payloads.",
-                ),
-            ],
-            outputs=[
-                io.Image.Output("image", display_name="IMAGE"),
-                io.Mask.Output("selection", display_name="SELECTION"),
-                io.Mask.Output("alpha", display_name="ALPHA"),
-                io.Int.Output("width", display_name="WIDTH"),
-                io.Int.Output("height", display_name="HEIGHT"),
-            ],
-        )
-
-    @classmethod
-    def execute(cls, image_index: str) -> io.NodeOutput:
-        result = storage.load_bridge_image(storage.image_slot_id(image_index), 512, 512)
-        return io.NodeOutput(result.image, result.selection, result.alpha, result.width, result.height)
-
-    @classmethod
-    def fingerprint_inputs(cls, image_index: str) -> tuple[str, str]:
-        return image_index, storage.latest_fingerprint()
-
-
 class AdvSendToPS(io.ComfyNode):
     @classmethod
     def define_schema(cls) -> io.Schema:
         return io.Schema(
             node_id="Adv_SendToPS",
-            display_name="Adv_SendToPS",
+            display_name="PS Bridge Send To Photoshop",
             category=CATEGORY,
             description="Terminal node for official Adv Request templates. Connect the final generated IMAGE here to return it to Photoshop.",
             is_output_node=True,
@@ -630,26 +457,6 @@ class AdvSendToPS(io.ComfyNode):
     @classmethod
     def fingerprint_inputs(cls, **kwargs) -> float:
         return float("NaN")
-
-
-class PSBridgeSendToPS(AdvSendToPS):
-    @classmethod
-    def define_schema(cls) -> io.Schema:
-        return io.Schema(
-            node_id="PSBridgeSendToPS",
-            display_name="PS Bridge Send To Photoshop",
-            category=CATEGORY,
-            description="Legacy terminal node alias kept for existing PS Bridge workflows.",
-            is_output_node=True,
-            not_idempotent=True,
-            inputs=[
-                io.Image.Input("image"),
-                io.Mask.Input("alpha", optional=True, tooltip="Optional opacity alpha mask, 0 transparent and 1 opaque."),
-                io.String.Input("filename_prefix", default="PSBridge", advanced=True, optional=True),
-            ],
-            outputs=[],
-            hidden=[io.Hidden.prompt, io.Hidden.extra_pnginfo],
-        )
 
 
 def _send_images_to_ps(
@@ -718,165 +525,3 @@ def _send_images_to_ps(
 
     manager.send_render_result_from_thread(render_payload)
     return io.NodeOutput(ui=ui.SavedImages(saved))
-
-
-class PSBridgePrompt(io.ComfyNode):
-    @classmethod
-    def define_schema(cls) -> io.Schema:
-        return io.Schema(
-            node_id="PSBridgePrompt",
-            display_name="PS Bridge Prompt",
-            category=f"{CATEGORY}/Slots",
-            not_idempotent=True,
-            inputs=[
-                io.String.Input("slot_id", default="positive"),
-                io.String.Input("fallback", default="", multiline=True, dynamic_prompts=True),
-            ],
-            outputs=[io.String.Output("text", display_name="STRING")],
-        )
-
-    @classmethod
-    def execute(cls, slot_id: str, fallback: str) -> io.NodeOutput:
-        return io.NodeOutput(str(storage.read_slot("prompt", slot_id, fallback)))
-
-    @classmethod
-    def fingerprint_inputs(cls, slot_id: str, fallback: str) -> tuple[str, str]:
-        return slot_id, storage.latest_fingerprint()
-
-
-class PSBridgeSeed(io.ComfyNode):
-    @classmethod
-    def define_schema(cls) -> io.Schema:
-        return io.Schema(
-            node_id="PSBridgeSeed",
-            display_name="PS Bridge Seed",
-            category=f"{CATEGORY}/Slots",
-            not_idempotent=True,
-            inputs=[
-                io.String.Input("slot_id", default="seed"),
-                io.Int.Input("fallback", default=1379, min=0, max=SEED_MAX, step=1, control_after_generate=True),
-            ],
-            outputs=[io.Int.Output("seed", display_name="INT")],
-        )
-
-    @classmethod
-    def execute(cls, slot_id: str, fallback: int) -> io.NodeOutput:
-        return io.NodeOutput(max(0, min(_coerce_int(storage.read_slot("seed", slot_id, fallback), fallback), SEED_MAX)))
-
-    @classmethod
-    def fingerprint_inputs(cls, slot_id: str, fallback: int) -> tuple[str, str]:
-        return slot_id, storage.latest_fingerprint()
-
-
-class PSBridgeFloat(io.ComfyNode):
-    @classmethod
-    def define_schema(cls) -> io.Schema:
-        return io.Schema(
-            node_id="PSBridgeFloat",
-            display_name="PS Bridge Float",
-            category=f"{CATEGORY}/Slots",
-            not_idempotent=True,
-            inputs=[
-                io.String.Input("slot_id", default="value"),
-                io.Float.Input("fallback", default=0.5, min=-100000.0, max=100000.0, step=0.01),
-                io.Float.Input("min_value", default=-100000.0, min=-100000.0, max=100000.0, step=0.01, advanced=True),
-                io.Float.Input("max_value", default=100000.0, min=-100000.0, max=100000.0, step=0.01, advanced=True),
-                io.Float.Input("step", default=0.01, min=0.000001, max=100000.0, step=0.01, advanced=True),
-            ],
-            outputs=[io.Float.Output("value", display_name="FLOAT")],
-        )
-
-    @classmethod
-    def execute(cls, slot_id: str, fallback: float, min_value: float, max_value: float, step: float) -> io.NodeOutput:
-        value = storage.read_slot("float", slot_id, fallback)
-        return io.NodeOutput(_coerce_float(value, fallback))
-
-    @classmethod
-    def fingerprint_inputs(
-        cls,
-        slot_id: str,
-        fallback: float,
-        min_value: float,
-        max_value: float,
-        step: float,
-    ) -> tuple[str, str]:
-        return slot_id, storage.latest_fingerprint()
-
-
-class PSBridgeInt(io.ComfyNode):
-    @classmethod
-    def define_schema(cls) -> io.Schema:
-        return io.Schema(
-            node_id="PSBridgeInt",
-            display_name="PS Bridge Int",
-            category=f"{CATEGORY}/Slots",
-            not_idempotent=True,
-            inputs=[
-                io.String.Input("slot_id", default="value"),
-                io.Int.Input("fallback", default=30, min=-1000000, max=1000000, step=1),
-                io.Int.Input("min_value", default=-1000000, min=-1000000, max=1000000, step=1, advanced=True),
-                io.Int.Input("max_value", default=1000000, min=-1000000, max=1000000, step=1, advanced=True),
-                io.Int.Input("step", default=1, min=1, max=1000000, step=1, advanced=True),
-            ],
-            outputs=[io.Int.Output("value", display_name="INT")],
-        )
-
-    @classmethod
-    def execute(cls, slot_id: str, fallback: int, min_value: int, max_value: int, step: int) -> io.NodeOutput:
-        value = storage.read_slot("int", slot_id, fallback)
-        return io.NodeOutput(_coerce_int(value, fallback))
-
-    @classmethod
-    def fingerprint_inputs(
-        cls,
-        slot_id: str,
-        fallback: int,
-        min_value: int,
-        max_value: int,
-        step: int,
-    ) -> tuple[str, str]:
-        return slot_id, storage.latest_fingerprint()
-
-
-class PSBridgeBoolean(io.ComfyNode):
-    @classmethod
-    def define_schema(cls) -> io.Schema:
-        return io.Schema(
-            node_id="PSBridgeBoolean",
-            display_name="PS Bridge Boolean",
-            category=f"{CATEGORY}/Slots",
-            not_idempotent=True,
-            inputs=[
-                io.String.Input("slot_id", default="value"),
-                io.Boolean.Input("fallback", default=True, label_on="true", label_off="false"),
-            ],
-            outputs=[io.Boolean.Output("value", display_name="BOOLEAN")],
-        )
-
-    @classmethod
-    def execute(cls, slot_id: str, fallback: bool) -> io.NodeOutput:
-        return io.NodeOutput(_coerce_bool(storage.read_slot("boolean", slot_id, fallback), fallback))
-
-    @classmethod
-    def fingerprint_inputs(cls, slot_id: str, fallback: bool) -> tuple[str, str]:
-        return slot_id, storage.latest_fingerprint()
-
-
-class PSBridgeAnyReroute(io.ComfyNode):
-    @classmethod
-    def define_schema(cls) -> io.Schema:
-        return io.Schema(
-            node_id="PSBridgeAnyReroute",
-            display_name="PS Bridge Any Reroute",
-            category=f"{CATEGORY}/Utils",
-            inputs=[io.AnyType.Input("value")],
-            outputs=[io.AnyType.Output("value")],
-        )
-
-    @classmethod
-    def execute(cls, value) -> io.NodeOutput:
-        return io.NodeOutput(value)
-
-    @classmethod
-    def validate_inputs(cls, input_types: dict | None = None, **kwargs):
-        return True

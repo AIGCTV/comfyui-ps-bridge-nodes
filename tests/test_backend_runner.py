@@ -22,29 +22,9 @@ class BackendRunnerPatchTests(unittest.TestCase):
                     "strength": 0.65,
                     "batch_count": 1,
                     "seed": 42,
-                    "send_to_ps": True,
                 },
             },
             "2": {
-                "class_type": "PSBridgeInt",
-                "inputs": {
-                    "slot_id": "steps",
-                    "fallback": 20,
-                    "min_value": 1,
-                    "max_value": 100,
-                    "step": 1,
-                },
-            },
-            "3": {
-                "class_type": "VpluginsRequest",
-                "inputs": {
-                    "main_image": "old.png",
-                    "mask_image": "old-mask.png",
-                    "prompt": "",
-                    "params_json": "{}",
-                },
-            },
-            "4": {
                 "class_type": "Adv_SendToPS",
                 "inputs": {},
             },
@@ -54,7 +34,6 @@ class BackendRunnerPatchTests(unittest.TestCase):
         return {
             "request_id": "task-1",
             "feature_id": "roundtrip",
-            "slots": {"int": {"steps": 35}},
             "adv_request": {
                 "image_count": 2,
                 "prompt": "a cat",
@@ -64,15 +43,9 @@ class BackendRunnerPatchTests(unittest.TestCase):
                 "seed": 123,
                 "params_json": "{\"strength\":0.55}",
             },
-            "vplugins_request": {
-                "main_image": "",
-                "mask_image": "",
-                "prompt": "a cat",
-                "params_json": "{\"strength\":0.55}",
-            },
         }
 
-    def test_patched_api_prompt_injects_request_slots_and_send_id(self):
+    def test_patched_api_prompt_injects_adv_request_and_send_id(self):
         prompt = backend_runner.patched_api_prompt_for_state(self._workflow(), self._state())
 
         adv_inputs = prompt["1"]["inputs"]
@@ -82,10 +55,12 @@ class BackendRunnerPatchTests(unittest.TestCase):
         self.assertEqual(adv_inputs["batch_count"], 2)
         self.assertEqual(adv_inputs["seed"], 123)
         self.assertEqual(adv_inputs["params_json"], "{\"strength\":0.55}")
-        self.assertNotIn("send_to_ps", adv_inputs)
-        self.assertEqual(prompt["2"]["inputs"]["fallback"], 35)
-        self.assertEqual(prompt["3"]["inputs"]["prompt"], "a cat")
-        self.assertEqual(prompt["4"]["inputs"]["request_id"], "task-1")
+        self.assertEqual(
+            [adv_inputs[f"image_{index}_file"] for index in range(1, 7)],
+            ["", "", "", "", "", ""],
+        )
+        self.assertEqual(adv_inputs["mask_image_file"], "")
+        self.assertEqual(prompt["2"]["inputs"]["request_id"], "task-1")
 
     def test_patched_api_prompt_rejects_graph_workflow(self):
         with self.assertRaises(backend_runner.BackendRunnerError):
@@ -93,8 +68,15 @@ class BackendRunnerPatchTests(unittest.TestCase):
 
     def test_patched_api_prompt_requires_send_node(self):
         workflow = self._workflow()
-        workflow.pop("4")
+        workflow.pop("2")
         with self.assertRaises(backend_runner.BackendRunnerError):
+            backend_runner.patched_api_prompt_for_state(workflow, self._state())
+
+    def test_patched_api_prompt_rejects_removed_send_node_id(self):
+        workflow = self._workflow()
+        workflow["2"]["class_type"] = "PSBridgeSendToPS"
+
+        with self.assertRaisesRegex(backend_runner.BackendRunnerError, "Adv_SendToPS"):
             backend_runner.patched_api_prompt_for_state(workflow, self._state())
 
 
@@ -108,6 +90,63 @@ class DummyWebSocket:
 class ManagerRoutingTests(unittest.IsolatedAsyncioTestCase):
     def _client(self, role, client_id, **kwargs):
         return BridgeClient(DummyWebSocket(), role, client_id, "127.0.0.1", **kwargs)
+
+    def test_state_message_contains_only_current_request_state(self):
+        manager = BridgeManager()
+        payload = manager._state_message(
+            {
+                "request_id": "task-1",
+                "feature_id": "roundtrip",
+                "slots": {},
+                "images": {},
+                "selection": None,
+                "adv_request": {"prompt": "a cat"},
+                "vplugins_request": {"prompt": "removed"},
+            }
+        )
+
+        self.assertEqual(payload["adv_request"], {"prompt": "a cat"})
+        self.assertNotIn("vplugins_request", payload)
+
+    async def test_slots_update_forwards_only_the_explicit_protocol_update(self):
+        manager = BridgeManager()
+        ps_client = self._client("ps", "ps")
+        comfy_client = self._client("comfy", "comfy")
+        manager.clients = {"ps": ps_client, "comfy": comfy_client}
+        state = {
+            "request_id": "task-1",
+            "feature_id": "roundtrip",
+            "slots": {
+                "prompt": {"prompt": "a cat"},
+                "seed": {"seed": 42},
+                "float": {"strength": 0.65},
+                "int": {"batch_count": 1},
+                "boolean": {},
+            },
+            "adv_request": {
+                "image_count": 2,
+                "prompt": "a cat",
+                "resolution": "1k",
+                "strength": 0.65,
+                "batch_count": 1,
+                "seed": 42,
+            },
+        }
+        update = {"slots": {"float": {"strength": 0.8}}}
+
+        with patch("ps_bridge.storage.load_state", return_value=state):
+            with patch("ps_bridge.storage.save_state") as save_state:
+                with patch.object(manager, "send_to", new=AsyncMock()) as send_to:
+                    await manager.handle_ps_message(ps_client, "slots_update", update)
+
+        saved = save_state.call_args.args[0]
+        self.assertEqual(saved["slots"]["prompt"], {"prompt": "a cat"})
+        self.assertEqual(saved["slots"]["seed"], {"seed": 42})
+        self.assertEqual(saved["slots"]["float"], {"strength": 0.8})
+        self.assertEqual(saved["adv_request"], state["adv_request"])
+        forwarded = send_to.call_args.args[2]
+        self.assertEqual(forwarded["slots"]["float"], {"strength": 0.8})
+        self.assertEqual(forwarded["payload"], update)
 
     async def test_auto_frontend_online_forwards_without_requiring_workflow_file(self):
         manager = BridgeManager()

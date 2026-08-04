@@ -6,10 +6,17 @@ import {
   ADV_REQUEST_CLASS,
   ADV_REQUEST_HIDDEN_OUTPUTS,
   ADV_REQUEST_MAX_IMAGES,
-  migrateAdvRequestWorkflowData,
+  normalizeAdvRequestWidgetPatch,
   outputName as contractOutputName,
   outputsMatchBackend,
+  sanitizeAdvRequestWorkflowData,
 } from "./adv_request_contract.js";
+import {
+  disableWidgetSerialization,
+  normalizeAdvRequestNodeWidgets,
+  restoreAdvRequestNodeWidgets,
+  serializeAdvRequestNode,
+} from "./adv_request_persistence.js";
 import {
   PS_SUMMARY_WIDGET_NAME,
   formatAdvRequestSummary,
@@ -26,38 +33,10 @@ const EXTENSION_NAME = "comfyui_ps_bridge.bridge";
 const BRIDGE_CLIENT_VERSION = 2;
 const CLIENT_ID = `comfy-${Math.random().toString(36).slice(2, 11)}`;
 const TEST_MODE_WIDGET_NAME = "Test Mode";
-const LEGACY_TEST_MODE_WIDGET_NAMES = ["Test Mode: OFF", "Test Mode: ON"];
-const TEST_MODE_WIDGET_NAMES = [TEST_MODE_WIDGET_NAME, ...LEGACY_TEST_MODE_WIDGET_NAMES];
-const SLOT_NODE_GROUPS = {
-  PSBridgePrompt: "prompt",
-  PSBridgeSeed: "seed",
-  PSBridgeFloat: "float",
-  PSBridgeInt: "int",
-  PSBridgeBoolean: "boolean",
-};
-const NUMERIC_SLOT_NODES = {
-  PSBridgeFloat: { integer: false },
-  PSBridgeInt: { integer: true },
-};
-const IMAGE_NODE_CLASS = "PSBridgeImageInput";
 const SEND_NODE_CLASS = "Adv_SendToPS";
-const LEGACY_SEND_NODE_CLASS = "PSBridgeSendToPS";
-const VPLUGINS_REQUEST_CLASS = "VpluginsRequest";
-const IMAGE_SLOT_LABELS = ["Image 1", "Image 2", "Image 3", "Image 4", "Image 5", "Image 6"];
 const ADV_REQUEST_MAX_BATCH_COUNT = 4;
-const ADV_REQUEST_IMAGE_INPUTS = Array.from({ length: ADV_REQUEST_MAX_IMAGES }, (_, index) => `image_${index + 1}`);
-const ADV_REQUEST_INTERNAL_WIDGETS = [
-  "params_json",
-  ...ADV_REQUEST_IMAGE_INPUTS.map((name) => `${name}_file`),
-  "mask_image_file",
-];
-const SEND_NODE_INTERNAL_WIDGETS = ["request_id"];
-const IMAGE_PREVIEW_PADDING = 8;
-const IMAGE_PREVIEW_LABEL_HEIGHT = 18;
-const IMAGE_PREVIEW_MIN_WIDTH = 300;
-const IMAGE_PREVIEW_MIN_HEIGHT = 176;
-const VPLUGINS_PARAM_OBJECT_KEYS = ["options", "settings", "params"];
-const VPLUGINS_TOP_LEVEL_PARAM_KEYS = [
+const REQUEST_PARAM_OBJECT_KEYS = ["options", "settings", "params"];
+const REQUEST_TOP_LEVEL_PARAM_KEYS = [
   "resolution",
   "batchCount",
   "batch_count",
@@ -87,7 +66,6 @@ let activeBridgeState = {
   selection: null,
   updated_at: 0,
 };
-const imagePreviewCache = new Map();
 
 function wsUrl() {
   const protocol = window.location.protocol === "https:" ? "wss" : "ws";
@@ -225,7 +203,7 @@ function nodeClass(node) {
 }
 
 function isSendNodeClass(name) {
-  return name === SEND_NODE_CLASS || name === LEGACY_SEND_NODE_CLASS;
+  return name === SEND_NODE_CLASS;
 }
 
 function hasBridgeSendNode(prompt) {
@@ -241,7 +219,7 @@ function assertBridgeSendNode(prompt) {
   if (hasBridgeSendNode(prompt)) {
     return;
   }
-  throw new Error("Workflow is missing Adv_SendToPS or PSBridgeSendToPS, so generated images cannot be returned to Photoshop.");
+  throw new Error("Workflow is missing Adv_SendToPS, so generated images cannot be returned to Photoshop.");
 }
 
 function widget(node, name) {
@@ -262,118 +240,8 @@ function setWidgetValue(node, name, value, options = {}) {
   }
 }
 
-function hideNodeWidget(node, name) {
-  const found = widget(node, name);
-  if (!found || found.hidden) return false;
-  found.hidden = true;
-  return true;
-}
-
-function hideNodeWidgets(node, names) {
-  let changed = false;
-  for (const name of names) {
-    changed = hideNodeWidget(node, name) || changed;
-  }
-  return changed;
-}
-
-function hideSlotIdWidget(node) {
-  const found = widget(node, "slot_id");
-  if (!found) return;
-  if (found.__psBridgeHiddenSlotId) return;
-  found.hidden = true;
-  found.__psBridgeHiddenSlotId = true;
-}
-
-function slotKey(value) {
-  return String(value ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
-}
-
 function emptySlots() {
   return { prompt: {}, seed: {}, float: {}, int: {}, boolean: {} };
-}
-
-function workflowSlotIds(graph = app.graph) {
-  const groups = { prompt: [], seed: [], float: [], int: [], boolean: [] };
-  for (const node of graphNodes(graph)) {
-    configureSlotNode(node);
-    const group = SLOT_NODE_GROUPS[nodeClass(node)];
-    if (!group) continue;
-    const slotId = String(widgetValue(node, "slot_id", "") || "");
-    if (slotId && !groups[group].includes(slotId)) {
-      groups[group].push(slotId);
-    }
-  }
-  return groups;
-}
-
-function slotIdFor(group, key, ids) {
-  const text = String(key);
-  if (ids[group]?.includes(text)) return text;
-  const normalized = slotKey(text);
-  const matches = (ids[group] || []).filter((slotId) => slotKey(slotId) === normalized);
-  return matches.length === 1 ? matches[0] : text;
-}
-
-function mergeSlots(base, updates) {
-  const result = emptySlots();
-  for (const group of Object.keys(result)) {
-    Object.assign(result[group], base?.[group] || {}, updates?.[group] || {});
-  }
-  return result;
-}
-
-function normalizeSlotsForGraph(payload, graph = app.graph) {
-  if (!payload || typeof payload !== "object") return emptySlots();
-  const ids = workflowSlotIds(graph);
-  const result = emptySlots();
-  const existingSlots = payload.slots && typeof payload.slots === "object" ? payload.slots : null;
-  const nestedPayload = payload.payload && typeof payload.payload === "object" ? payload.payload : null;
-  const sources = [payload];
-  if (nestedPayload) sources.push(nestedPayload);
-  for (const source of [payload, nestedPayload].filter(Boolean)) {
-    for (const key of ["settings", "params"]) {
-      if (source[key] && typeof source[key] === "object") {
-        sources.push(source[key]);
-      }
-    }
-  }
-
-  const put = (group, key, value) => {
-    if (value === undefined || value === null) return;
-    const slotId = slotIdFor(group, key, ids);
-    if (!Object.prototype.hasOwnProperty.call(result[group], slotId)) {
-      result[group][slotId] = value;
-    }
-  };
-
-  for (const group of Object.keys(result)) {
-    for (const source of [existingSlots, ...sources].filter(Boolean)) {
-      const value = source[group];
-      if (value && typeof value === "object" && !Array.isArray(value)) {
-        for (const [key, item] of Object.entries(value)) {
-          put(group, key, item);
-        }
-      } else if (value !== undefined && value !== null && ids[group]?.length === 1) {
-        put(group, ids[group][0], value);
-      }
-    }
-  }
-
-  for (const source of sources) {
-    for (const group of Object.keys(result)) {
-      for (const slotId of ids[group] || []) {
-        if (Object.prototype.hasOwnProperty.call(result[group], slotId)) continue;
-        const matches = Object.keys(source).filter((key) => {
-          return !Object.prototype.hasOwnProperty.call(result, key) && slotKey(key) === slotKey(slotId);
-        });
-        if (matches.length === 1 && source[matches[0]] !== undefined && source[matches[0]] !== null) {
-          result[group][slotId] = source[matches[0]];
-        }
-      }
-    }
-  }
-  return result;
 }
 
 function numberValue(value, fallback = 0) {
@@ -381,107 +249,6 @@ function numberValue(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function orderedBounds(minValue, maxValue, integer) {
-  let lower = numberValue(minValue, 0);
-  let upper = numberValue(maxValue, lower);
-  if (integer) {
-    lower = Math.round(lower);
-    upper = Math.round(upper);
-  }
-  if (lower > upper) {
-    [lower, upper] = [upper, lower];
-  }
-  return { lower, upper };
-}
-
-function constrainNumericValue(value, minValue, maxValue, stepValue, integer) {
-  const { lower, upper } = orderedBounds(minValue, maxValue, integer);
-  let step = Math.abs(numberValue(stepValue, integer ? 1 : 0));
-  if (integer) {
-    step = Math.max(1, Math.round(step));
-  }
-  let constrained = Math.max(lower, Math.min(numberValue(value, lower), upper));
-  if (step > 0) {
-    constrained = lower + Math.round((constrained - lower) / step) * step;
-  }
-  constrained = Math.max(lower, Math.min(constrained, upper));
-  return integer ? Math.round(constrained) : Number(constrained.toFixed(12));
-}
-
-function numericSlotConfig(node) {
-  const options = NUMERIC_SLOT_NODES[nodeClass(node)];
-  if (!options) return null;
-  const integer = Boolean(options.integer);
-  return {
-    integer,
-    minValue: widgetValue(node, "min_value", 0),
-    maxValue: widgetValue(node, "max_value", integer ? 100 : 1),
-    stepValue: widgetValue(node, "step", integer ? 1 : 0.01),
-  };
-}
-
-function applyNumericWidgetOptions(foundWidget, config) {
-  if (!foundWidget || !config) return;
-  const { lower, upper } = orderedBounds(config.minValue, config.maxValue, config.integer);
-  const step = config.integer
-    ? Math.max(1, Math.round(Math.abs(numberValue(config.stepValue, 1))))
-    : Math.abs(numberValue(config.stepValue, 0.01)) || 0.01;
-  foundWidget.options = foundWidget.options || {};
-  foundWidget.options.min = lower;
-  foundWidget.options.max = upper;
-  foundWidget.options.step = step;
-}
-
-function applyNumericSlotOptions(node) {
-  const config = numericSlotConfig(node);
-  if (!config) return;
-  const fallbackWidget = widget(node, "fallback");
-  if (!fallbackWidget) return;
-  applyNumericWidgetOptions(fallbackWidget, config);
-}
-
-function syncNumericSlotNode(node) {
-  const config = numericSlotConfig(node);
-  if (!config) return;
-  const fallbackWidget = widget(node, "fallback");
-  if (!fallbackWidget) return;
-  applyNumericWidgetOptions(fallbackWidget, config);
-  fallbackWidget.value = constrainNumericValue(
-    fallbackWidget.value,
-    config.minValue,
-    config.maxValue,
-    config.stepValue,
-    config.integer,
-  );
-}
-
-function patchNumericSlotCallbacks(node) {
-  if (!numericSlotConfig(node)) return;
-  for (const name of ["fallback", "min_value", "max_value", "step"]) {
-    const found = widget(node, name);
-    if (!found || found.__psBridgeNumericCallbackPatched) continue;
-    const originalCallback = found.callback;
-    found.callback = function (...args) {
-      const result = originalCallback?.apply(this, args);
-      syncNumericSlotNode(node);
-      markCanvasDirty();
-      return result;
-    };
-    found.__psBridgeNumericCallbackPatched = true;
-  }
-}
-
-function configureNumericSlotNode(node) {
-  if (!NUMERIC_SLOT_NODES[nodeClass(node)]) return;
-  patchNumericSlotCallbacks(node);
-  applyNumericSlotOptions(node);
-}
-
-function configureSlotNode(node) {
-  if (!SLOT_NODE_GROUPS[nodeClass(node)]) return;
-  hideSlotIdWidget(node);
-  configureNumericSlotNode(node);
-}
 
 function graphNodes(graph = app.graph) {
   return graph?._nodes || [];
@@ -557,114 +324,6 @@ function toggleCurrentGraphTestMode(value) {
   setCurrentGraphTestMode(toggleValue(value));
 }
 
-function imageSlotId(value) {
-  const text = String(value ?? "").trim();
-  const normalized = text.toUpperCase().replace(/\s+/g, "_");
-  if (normalized === "MAIN") return "IMAGE_1";
-  const match = normalized.match(/^IMAGE_?([1-6])$/) || normalized.match(/^([1-6])$/);
-  if (match) return `IMAGE_${match[1]}`;
-  const looseMatch = text.match(/[1-6]/);
-  return looseMatch ? `IMAGE_${looseMatch[0]}` : "IMAGE_1";
-}
-
-function imageSlotLabel(value) {
-  const slotId = imageSlotId(value);
-  return `Image ${slotId.slice(-1)}`;
-}
-
-function imageMetaForNode(node) {
-  const value = widgetValue(node, "image_index", "Image 1");
-  const slotId = imageSlotId(value);
-  const meta = activeBridgeState.images?.[slotId] || (slotId === "IMAGE_1" ? activeBridgeState.images?.MAIN : undefined);
-  return { slotId, label: imageSlotLabel(value), meta };
-}
-
-function apiUrl(path) {
-  if (typeof api.apiURL === "function") {
-    return api.apiURL(path);
-  }
-  return path;
-}
-
-function previewImage(meta) {
-  if (!meta?.filename) return null;
-  const cacheToken = `${activeRequestId || ""}:${activeBridgeState.updated_at || 0}`;
-  const key = `${meta.filename}:${cacheToken}`;
-  let image = imagePreviewCache.get(key);
-  if (!image) {
-    image = new Image();
-    image.onload = () => {
-      syncAllImagePreviews();
-      markCanvasDirty();
-    };
-    image.onerror = markCanvasDirty;
-    image.src = apiUrl(`/ps-bridge/inputs/${encodeURIComponent(meta.filename)}?v=${encodeURIComponent(cacheToken)}`);
-    imagePreviewCache.set(key, image);
-  }
-  return image.complete && image.naturalWidth > 0 ? image : null;
-}
-
-function previewKey(meta) {
-  return meta?.filename ? `${meta.filename}:${activeRequestId || ""}:${activeBridgeState.updated_at || 0}` : "";
-}
-
-function normalizeImageWidget(node) {
-  const imageWidget = widget(node, "image_index");
-  if (!imageWidget) return;
-  if (!IMAGE_SLOT_LABELS.includes(imageWidget.value)) {
-    imageWidget.value = imageSlotLabel(imageWidget.value);
-  }
-  if (!imageWidget.__psBridgePreviewCallbackPatched) {
-    const originalCallback = imageWidget.callback;
-    imageWidget.callback = function (...args) {
-      const result = originalCallback?.apply(this, args);
-      normalizeImageWidget(node);
-      syncImagePreviewForNode(node);
-      markCanvasDirty();
-      return result;
-    };
-    imageWidget.__psBridgePreviewCallbackPatched = true;
-  }
-}
-
-function clearImagePreviewForNode(node) {
-  node.__psBridgePreviewKey = "";
-  node.__psBridgePreviewImage = null;
-  node.__psBridgePreviewMeta = null;
-  node.imgs = null;
-  node.imageIndex = null;
-}
-
-function syncImagePreviewForNode(node) {
-  if (nodeClass(node) !== IMAGE_NODE_CLASS) return;
-  node.imgs = null;
-  node.imageIndex = null;
-  const { meta } = imageMetaForNode(node);
-  const key = previewKey(meta);
-  if (!key) {
-    clearImagePreviewForNode(node);
-    return;
-  }
-
-  const image = previewImage(meta);
-  node.__psBridgePreviewKey = key;
-  node.__psBridgePreviewMeta = meta || null;
-  if (!image) {
-    node.__psBridgePreviewImage = null;
-    return;
-  }
-
-  if (node.__psBridgePreviewImage !== image) {
-    node.__psBridgePreviewImage = image;
-  }
-}
-
-function syncAllImagePreviews() {
-  for (const node of graphNodes()) {
-    syncImagePreviewForNode(node);
-  }
-}
-
 function clearSendNodePreviews(graph = app.graph) {
   for (const node of graphNodes(graph)) {
     if (!isSendNodeClass(nodeClass(node))) continue;
@@ -675,82 +334,6 @@ function clearSendNodePreviews(graph = app.graph) {
   if (graph === app.graph) {
     markCanvasDirty();
   }
-}
-
-function widgetDrawHeight(foundWidget) {
-  if (!foundWidget) return 0;
-  if (Number(foundWidget.computedHeight || 0) > 0) {
-    return Number(foundWidget.computedHeight);
-  }
-  if (typeof foundWidget.computeSize === "function") {
-    try {
-      const computed = foundWidget.computeSize();
-      if (Number(computed?.[1] || 0) > 0) {
-        return Number(computed[1]);
-      }
-    } catch {
-      // Fall through to the LiteGraph default height.
-    }
-  }
-  return Number(globalThis.LiteGraph?.NODE_WIDGET_HEIGHT || 20);
-}
-
-function imagePreviewTop(node) {
-  const widgets = node.widgets || [];
-  if (!widgets.length) return IMAGE_PREVIEW_PADDING;
-  const lastWidget = widgets[widgets.length - 1];
-  return Number(lastWidget.last_y || 0) + widgetDrawHeight(lastWidget) + IMAGE_PREVIEW_PADDING;
-}
-
-function imagePreviewSizeLabel(node, image) {
-  const meta = node.__psBridgePreviewMeta || {};
-  const width = Number(meta.width || image.naturalWidth || image.width || 0);
-  const height = Number(meta.height || image.naturalHeight || image.height || 0);
-  return width > 0 && height > 0 ? `${width} \u00d7 ${height}` : "";
-}
-
-function drawImagePreviewForNode(node, ctx) {
-  if (!ctx) return;
-  const image = node.__psBridgePreviewImage;
-  if (!image?.complete || !image.naturalWidth || !image.naturalHeight) return;
-
-  const nodeWidth = Number(node.size?.[0] || 0);
-  const nodeHeight = Number(node.size?.[1] || 0);
-  const top = imagePreviewTop(node);
-  const maxWidth = Math.max(1, nodeWidth - IMAGE_PREVIEW_PADDING * 2);
-  const maxHeight = Math.max(1, nodeHeight - top - IMAGE_PREVIEW_LABEL_HEIGHT - IMAGE_PREVIEW_PADDING);
-  const scale = Math.min(maxWidth / image.naturalWidth, maxHeight / image.naturalHeight);
-  const width = image.naturalWidth * scale;
-  const height = image.naturalHeight * scale;
-  const x = (nodeWidth - width) / 2;
-  const y = top + (maxHeight - height) / 2;
-
-  ctx.save();
-  ctx.imageSmoothingEnabled = true;
-  ctx.beginPath();
-  ctx.rect(IMAGE_PREVIEW_PADDING, top, maxWidth, maxHeight);
-  ctx.clip();
-  ctx.drawImage(image, x, y, width, height);
-  ctx.restore();
-
-  const label = imagePreviewSizeLabel(node, image);
-  if (!label) return;
-  ctx.save();
-  ctx.fillStyle = "rgba(220, 220, 220, 0.92)";
-  ctx.font = "14px sans-serif";
-  ctx.textAlign = "center";
-  ctx.textBaseline = "top";
-  ctx.fillText(label, nodeWidth / 2, Math.min(nodeHeight - IMAGE_PREVIEW_LABEL_HEIGHT, y + height + 4));
-  ctx.restore();
-}
-
-function configureImageInputNode(node) {
-  if (nodeClass(node) !== IMAGE_NODE_CLASS) return;
-  normalizeImageWidget(node);
-  const width = Math.max(Number(node.size?.[0] || 0), IMAGE_PREVIEW_MIN_WIDTH);
-  const height = Math.max(Number(node.size?.[1] || 0), IMAGE_PREVIEW_MIN_HEIGHT);
-  node.size = [width, height];
-  syncImagePreviewForNode(node);
 }
 
 function setActiveBridgeState(data, graph = app.graph) {
@@ -764,52 +347,12 @@ function setActiveBridgeState(data, graph = app.graph) {
     selection: data?.selection || null,
     updated_at: data?.updated_at || Date.now(),
   };
-  imagePreviewCache.clear();
   for (const node of graphNodes(graph)) {
     configureAdvRequestNode(node);
-    configureImageInputNode(node);
-    configureSlotNode(node);
   }
   if (graph === app.graph) {
     markCanvasDirty();
   }
-}
-
-function patchImageInputNode(nodeType) {
-  if (nodeType.prototype.__psBridgeImagePatched) return;
-  nodeType.prototype.__psBridgeImagePatched = true;
-
-  const originalOnNodeCreated = nodeType.prototype.onNodeCreated;
-  nodeType.prototype.onNodeCreated = function (...args) {
-    const result = originalOnNodeCreated?.apply(this, args);
-    configureImageInputNode(this);
-    return result;
-  };
-
-  const originalOnDrawForeground = nodeType.prototype.onDrawForeground;
-  nodeType.prototype.onDrawForeground = function (...args) {
-    syncImagePreviewForNode(this);
-    originalOnDrawForeground?.apply(this, args);
-    drawImagePreviewForNode(this, args[0]);
-  };
-}
-
-function patchSlotNode(nodeType) {
-  if (nodeType.prototype.__psBridgeSlotPatched) return;
-  nodeType.prototype.__psBridgeSlotPatched = true;
-
-  const originalOnNodeCreated = nodeType.prototype.onNodeCreated;
-  nodeType.prototype.onNodeCreated = function (...args) {
-    const result = originalOnNodeCreated?.apply(this, args);
-    configureSlotNode(this);
-    return result;
-  };
-
-  const originalOnDrawForeground = nodeType.prototype.onDrawForeground;
-  nodeType.prototype.onDrawForeground = function (...args) {
-    configureSlotNode(this);
-    return originalOnDrawForeground?.apply(this, args);
-  };
 }
 
 function advRequestImageCount(node) {
@@ -1036,8 +579,7 @@ function refreshAdvRequestOutputs(node, explicitCount = undefined) {
 
 function syncAdvRequestSlots(node) {
   if (nodeClass(node) !== ADV_REQUEST_CLASS) return;
-  setWidgetValue(node, "image_count", advRequestImageCount(node), { callback: false });
-  setWidgetValue(node, "batch_count", advRequestBatchCount(widgetValue(node, "batch_count", 1)), { callback: false });
+  normalizeAdvRequestNodeWidgets(node);
   for (let index = 0; index < (node.outputs || []).length; index += 1) {
     const output = node.outputs[index];
     const definition = advRequestOutputDefinition(advRequestOutputName(output));
@@ -1086,14 +628,14 @@ function ensureAdvRequestRefreshWidget(node) {
   }
   if (!refresh) return false;
   refresh.name = "Refresh";
-  refresh.serialize = false;
+  disableWidgetSerialization(refresh);
   refresh.callback = () => refreshAdvRequestOutputs(node);
   return moveWidgetAfter(node, "Refresh", "image_count");
 }
 
 function testModeWidget(node) {
   return (node.widgets || []).find((candidate) => {
-    return candidate?.__psBridgeTestModeWidget || TEST_MODE_WIDGET_NAMES.includes(candidate?.name);
+    return candidate?.__psBridgeTestModeWidget || candidate?.name === TEST_MODE_WIDGET_NAME;
   });
 }
 
@@ -1103,7 +645,7 @@ function updateAdvRequestTestModeWidget(node) {
   found.name = TEST_MODE_WIDGET_NAME;
   found.type = "toggle";
   found.value = currentGraphTestMode;
-  found.serialize = false;
+  disableWidgetSerialization(found);
   found.__psBridgeTestModeWidget = true;
   found.options = { ...(found.options || {}), on: "ON", off: "OFF" };
   found.callback = toggleCurrentGraphTestMode;
@@ -1153,7 +695,7 @@ function advRequestWidgetRequest(node) {
     strength: numberValue(widgetValue(node, "strength", 0.65), 0.65),
     batch_count: advRequestBatchCount(widgetValue(node, "batch_count", 1)),
     seed: Math.max(0, Math.round(numberValue(widgetValue(node, "seed", 42), 42))),
-    params_json: String(widgetValue(node, "params_json", "{}") || "{}"),
+    control_after_generate: String(widgetValue(node, "control_after_generate", "randomize") || "randomize"),
   };
 }
 
@@ -1195,7 +737,7 @@ function ensureAdvRequestSummaryWidget(node) {
   if (!isCurrentGraphNode(node)) return false;
   let summary = widget(node, PS_SUMMARY_WIDGET_NAME);
   if (summary) {
-    summary.serialize = false;
+    disableWidgetSerialization(summary);
     return moveWidgetToEnd(node, PS_SUMMARY_WIDGET_NAME);
   }
 
@@ -1213,7 +755,7 @@ function ensureAdvRequestSummaryWidget(node) {
     });
     if (summary) {
       summary.name = PS_SUMMARY_WIDGET_NAME;
-      summary.serialize = false;
+      disableWidgetSerialization(summary);
       summary.__psBridgeSummaryElement = container;
       summary.computeSize = function () {
         return [node.size?.[0] || 300, 32];
@@ -1225,7 +767,7 @@ function ensureAdvRequestSummaryWidget(node) {
 
   summary = node.addWidget?.("text", PS_SUMMARY_WIDGET_NAME, "", () => {});
   if (!summary) return false;
-  summary.serialize = false;
+  disableWidgetSerialization(summary);
   summary.readonly = true;
   summary.disabled = true;
   summary.computeSize = function () {
@@ -1250,7 +792,7 @@ function updateAdvRequestSummary(node) {
 function configureAdvRequestNode(node) {
   if (nodeClass(node) !== ADV_REQUEST_CLASS) return;
   patchAdvRequestWidgetCallbacks(node);
-  let changed = hideNodeWidgets(node, ADV_REQUEST_INTERNAL_WIDGETS);
+  let changed = false;
   changed = ensureAdvRequestRefreshWidget(node) || changed;
   changed = ensureAdvRequestTestModeWidget(node) || changed;
   changed = ensureAdvRequestSummaryWidget(node) || changed;
@@ -1309,10 +851,18 @@ function patchAdvRequestNode(nodeType) {
   if (nodeType.prototype.__advRequestPatched) return;
   nodeType.prototype.__advRequestPatched = true;
 
-  const originalOnNodeCreated = nodeType.prototype.onNodeCreated;
-  nodeType.prototype.onNodeCreated = function (...args) {
-    const result = originalOnNodeCreated?.apply(this, args);
+  const originalOnConfigure = nodeType.prototype.onConfigure;
+  nodeType.prototype.onConfigure = function (...args) {
+    const result = originalOnConfigure?.apply(this, args);
+    restoreAdvRequestNodeWidgets(this, args[0]);
     configureAdvRequestNode(this);
+    return result;
+  };
+
+  const originalOnSerialize = nodeType.prototype.onSerialize;
+  nodeType.prototype.onSerialize = function (...args) {
+    const result = originalOnSerialize?.apply(this, args);
+    serializeAdvRequestNode(this, args[0]);
     return result;
   };
 
@@ -1322,14 +872,6 @@ function patchAdvRequestNode(nodeType) {
       const normalizedSlot = normalizeAdvRequestOutgoingSlot(this, slot);
       return originalConnect.call(this, normalizedSlot, targetNode, targetSlot, ...args);
     };
-  }
-}
-
-function configureSendNode(node) {
-  if (!isSendNodeClass(nodeClass(node))) return;
-  if (hideNodeWidgets(node, SEND_NODE_INTERNAL_WIDGETS)) {
-    node.setSize?.(node.computeSize?.() || node.size);
-    markCanvasDirty();
   }
 }
 
@@ -1472,9 +1014,14 @@ function installGraphToPromptPatch() {
   const originalGraphToPrompt = app.graphToPrompt;
   app.graphToPrompt = async function (...args) {
     const graph = args[0] || this.graph || app.graph;
+    const requestId = graph?.__psBridgeRequestId || activeRequestId;
     configureAdvRequestNodesForPrompt(graph);
     const promptData = await originalGraphToPrompt.apply(this, args);
     remapAdvRequestPromptLinks(promptData, graph);
+    applyRequestIdToApiPrompt(promptData.output, requestId);
+    if (graph?.__psBridgeRequestId === requestId) {
+      setHiddenProperty(graph, "__psBridgeRequestId", "");
+    }
     return promptData;
   };
   app.__psBridgeGraphToPromptPatched = true;
@@ -1507,14 +1054,9 @@ function installActiveGraphListeners() {
 }
 
 function collectSlots(graph = app.graph) {
-  const slots = { prompt: {}, seed: {}, float: {}, int: {}, boolean: {} };
-  for (const node of graphNodes(graph)) {
-    configureSlotNode(node);
-    const group = SLOT_NODE_GROUPS[nodeClass(node)];
-    if (!group) continue;
-    const slotId = String(widgetValue(node, "slot_id", "") || "");
-    if (!slotId) continue;
-    slots[group][slotId] = widgetValue(node, "fallback", "");
+  const requestNode = graphNodes(graph).find((node) => nodeClass(node) === ADV_REQUEST_CLASS);
+  if (requestNode) {
+    configureAdvRequestNode(requestNode);
   }
   const graphState = activeGraphMetadata(graph);
   return {
@@ -1527,7 +1069,8 @@ function collectSlots(graph = app.graph) {
     window_focused: graphState.window_focused,
     last_active_at: graphState.last_active_at,
     graph: currentGraphStatus(graph),
-    slots,
+    slots: emptySlots(),
+    adv_request: requestNode ? advRequestWidgetRequest(requestNode) : {},
   };
 }
 
@@ -1535,25 +1078,10 @@ function currentGraphStatus(graph = app.graph) {
   return graphStatusFromNodeClasses(graphNodes(graph).map((node) => nodeClass(node)));
 }
 
-function applySlots(slots, graph = app.graph) {
-  if (!slots) return;
-  for (const node of graphNodes(graph)) {
-    configureSlotNode(node);
-    const cls = nodeClass(node);
-    if (isSendNodeClass(cls)) {
-      configureSendNode(node);
-      setWidgetValue(node, "request_id", activeRequestId);
-      continue;
-    }
-    const group = SLOT_NODE_GROUPS[cls];
-    if (!group) continue;
-    const slotId = String(widgetValue(node, "slot_id", "") || "");
-    if (!slotId || !Object.prototype.hasOwnProperty.call(slots[group] || {}, slotId)) continue;
-    setWidgetValue(node, "fallback", slots[group][slotId], { callback: false });
-    configureSlotNode(node);
-  }
-  if (graph === app.graph) {
-    app.graph?.setDirtyCanvas(true, true);
+function applyRequestIdToApiPrompt(prompt, requestId = activeRequestId) {
+  for (const [, node] of apiPromptEntries(prompt)) {
+    if (!isSendNodeClass(node.class_type)) continue;
+    node.inputs = { ...(node.inputs || {}), request_id: requestId };
   }
 }
 
@@ -1563,7 +1091,6 @@ function syncCurrentAdvRequestFromRunData(data) {
     return status;
   }
   setActiveBridgeState(data);
-  applySlots(normalizeSlotsForGraph(data));
   applyAdvRequestToGraph(data);
   return status;
 }
@@ -1587,7 +1114,7 @@ function cloneWorkflow(workflow) {
 }
 
 function workflowForGraphConfigure(workflow) {
-  return migrateAdvRequestWorkflowData(cloneWorkflow(workflow));
+  return sanitizeAdvRequestWorkflowData(cloneWorkflow(workflow));
 }
 
 function isApiPromptNode(value) {
@@ -1607,19 +1134,6 @@ function apiPromptEntries(prompt) {
   return Object.entries(prompt || {}).filter(([, node]) => isApiPromptNode(node));
 }
 
-function syncApiPromptNumericNode(node) {
-  const options = NUMERIC_SLOT_NODES[node.class_type];
-  if (!options) return;
-  const inputs = node.inputs || {};
-  inputs.fallback = constrainNumericValue(
-    inputs.fallback,
-    inputs.min_value,
-    inputs.max_value,
-    inputs.step,
-    Boolean(options.integer),
-  );
-}
-
 function promptFromSlots(slots) {
   const promptSlots = slots?.prompt;
   if (!promptSlots || typeof promptSlots !== "object") return "";
@@ -1634,24 +1148,25 @@ function promptFromSlots(slots) {
 
 function paramsFromRunData(data) {
   const params = {};
-  for (const key of VPLUGINS_PARAM_OBJECT_KEYS) {
+  for (const key of REQUEST_PARAM_OBJECT_KEYS) {
     const value = data?.[key];
     if (value && typeof value === "object" && !Array.isArray(value)) {
       Object.assign(params, value);
     }
   }
-  for (const key of VPLUGINS_TOP_LEVEL_PARAM_KEYS) {
+  for (const key of REQUEST_TOP_LEVEL_PARAM_KEYS) {
     if (data?.[key] !== undefined && data[key] !== null) {
       params[key] = data[key];
     }
   }
-  if (Object.keys(params).length) return params;
-
   const slots = data?.slots || {};
   for (const group of ["seed", "float", "int", "boolean"]) {
     const values = slots[group];
     if (values && typeof values === "object" && Object.keys(values).length) {
-      params[group] = values;
+      params[group] = {
+        ...(params[group] && typeof params[group] === "object" ? params[group] : {}),
+        ...values,
+      };
     }
   }
   return params;
@@ -1706,29 +1221,15 @@ function paramValue(params, ...keys) {
   return undefined;
 }
 
-function vpluginsRequestForRunData(data) {
-  const request = data?.vplugins_request && typeof data.vplugins_request === "object" ? data.vplugins_request : {};
-  const prompt = request.prompt ?? data?.prompt ?? promptFromSlots(data?.slots);
-  const paramsJson = request.params_json ?? request.paramsJson ?? paramsFromRunData(data);
-  return {
-    main_image: request.main_image ?? "",
-    mask_image: request.mask_image ?? "",
-    prompt: String(prompt ?? ""),
-    params_json: paramsJsonString(paramsJson),
-  };
-}
-
 function advRequestForRunData(data) {
   const payload = data?.payload && typeof data.payload === "object" ? data.payload : {};
   const request =
     (data?.adv_request && typeof data.adv_request === "object" ? data.adv_request : null)
     || (payload?.adv_request && typeof payload.adv_request === "object" ? payload.adv_request : {})
     || {};
-  const vpluginsRequest = data?.vplugins_request && typeof data.vplugins_request === "object" ? data.vplugins_request : {};
   const params = {
     ...paramsFromRunData(data),
     ...paramsFromRunData(payload),
-    ...paramsJsonObject(vpluginsRequest.params_json ?? vpluginsRequest.paramsJson),
     ...paramsJsonObject(request.params_json ?? request.paramsJson),
   };
   const prompt = request.prompt ?? payload.prompt ?? data?.prompt ?? promptFromSlots(payload.slots || data?.slots);
@@ -1749,28 +1250,93 @@ function advRequestForRunData(data) {
     ?? paramValue(params, "batch_count", "batchCount")
     ?? 1;
   const seed = request.seed ?? payload.seed ?? data?.seed ?? paramValue(params, "seed", "MAIN") ?? 42;
+  const resolution = request.resolution ?? payload.resolution ?? data?.resolution ?? paramValue(params, "resolution");
+  const normalizedSeed = normalizeAdvRequestWidgetPatch({ seed }).seed;
   return {
     image_count: imageCount,
     prompt: String(prompt ?? ""),
-    resolution: String(request.resolution ?? payload.resolution ?? data?.resolution ?? paramValue(params, "resolution") ?? "1k"),
-    strength: numberValue(request.strength ?? payload.strength ?? data?.strength ?? paramValue(params, "strength"), 0.65),
+    resolution: String(resolution || "1k"),
+    strength: Math.max(
+      0,
+      Math.min(1, numberValue(request.strength ?? payload.strength ?? data?.strength ?? paramValue(params, "strength"), 0.65)),
+    ),
     batch_count: advRequestBatchCount(batchCount),
-    seed: Math.max(0, Math.round(numberValue(seed, 42))),
+    seed: normalizedSeed,
     params_json: paramsJsonString(request.params_json ?? request.paramsJson ?? params),
   };
 }
 
-function applyVpluginsRequestToApiPrompt(prompt, data) {
-  const request = vpluginsRequestForRunData(data);
-  for (const [, node] of apiPromptEntries(prompt)) {
-    if (node.class_type !== VPLUGINS_REQUEST_CLASS) continue;
-    const inputs = node.inputs || {};
-    inputs.main_image = request.main_image;
-    inputs.mask_image = request.mask_image;
-    inputs.prompt = request.prompt;
-    inputs.params_json = request.params_json;
-    node.inputs = inputs;
+function explicitObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
+function explicitValue(sources, ...keys) {
+  for (const source of sources) {
+    if (!source) continue;
+    for (const key of keys) {
+      if (Object.prototype.hasOwnProperty.call(source, key) && source[key] !== undefined && source[key] !== null) {
+        return source[key];
+      }
+    }
   }
+  return undefined;
+}
+
+function normalizeAdvRequestPatchValue(name, value) {
+  return normalizeAdvRequestWidgetPatch({ [name]: value })[name];
+}
+
+function advRequestPatchForRunData(data) {
+  const root = explicitObject(data) || {};
+  const payload = explicitObject(root.payload) || {};
+  const sources = [
+    explicitObject(root.adv_request),
+    explicitObject(payload.adv_request),
+    payload,
+    root,
+  ].filter(Boolean);
+  const params = {
+    ...paramsFromRunData(root),
+    ...paramsFromRunData(payload),
+  };
+  const patch = {};
+  const set = (name, value) => {
+    if (value !== undefined) {
+      patch[name] = normalizeAdvRequestPatchValue(name, value);
+    }
+  };
+
+  set("image_count", explicitValue(sources, "image_count") ?? paramValue(params, "image_count"));
+
+  let prompt = explicitValue(sources, "prompt");
+  if (prompt === undefined) {
+    prompt = paramValue(params, "prompt");
+  }
+  if (prompt === undefined) {
+    const slotSources = [payload.slots, root.slots].filter((slots) => explicitObject(slots?.prompt));
+    for (const slots of slotSources) {
+      const values = Object.values(slots.prompt);
+      if (values.length) {
+        prompt = promptFromSlots(slots);
+        break;
+      }
+    }
+  }
+  set("prompt", prompt);
+  set("resolution", explicitValue(sources, "resolution") ?? paramValue(params, "resolution"));
+  set("strength", explicitValue(sources, "strength") ?? paramValue(params, "strength"));
+  set(
+    "batch_count",
+    explicitValue(sources, "batch_count", "batchCount") ?? paramValue(params, "batch_count", "batchCount"),
+  );
+  set("seed", explicitValue(sources, "seed") ?? paramValue(params, "seed", "MAIN"));
+  set(
+    "control_after_generate",
+    explicitValue(sources, "control_after_generate", "controlAfterGenerate")
+      ?? paramValue(params, "control_after_generate", "controlAfterGenerate"),
+  );
+
+  return patch;
 }
 
 function applyAdvRequestToApiPrompt(prompt, data) {
@@ -1785,8 +1351,6 @@ function applyAdvRequestToApiPrompt(prompt, data) {
     inputs.batch_count = request.batch_count;
     inputs.seed = request.seed;
     inputs.params_json = request.params_json;
-    delete inputs.send_to_ps;
-    delete inputs.sendToPs;
     for (let index = 1; index <= ADV_REQUEST_MAX_IMAGES; index += 1) {
       inputs[`image_${index}_file`] = "";
     }
@@ -1805,11 +1369,6 @@ function applyAdvRequestToGraph(data, graph = app.graph) {
     setWidgetValue(node, "strength", request.strength, { callback: false });
     setWidgetValue(node, "batch_count", request.batch_count, { callback: false });
     setWidgetValue(node, "seed", request.seed, { callback: false });
-    setWidgetValue(node, "params_json", request.params_json, { callback: false });
-    for (let index = 1; index <= ADV_REQUEST_MAX_IMAGES; index += 1) {
-      setWidgetValue(node, `image_${index}_file`, "", { callback: false });
-    }
-    setWidgetValue(node, "mask_image_file", "", { callback: false });
     syncAdvRequestSlots(node);
     updateAdvRequestSummary(node);
     if (graph !== app.graph) {
@@ -1821,41 +1380,33 @@ function applyAdvRequestToGraph(data, graph = app.graph) {
   }
 }
 
-function applySlotsToApiPrompt(prompt, slots) {
-  for (const [, node] of apiPromptEntries(prompt)) {
-    const inputs = node.inputs || {};
-    if (isSendNodeClass(node.class_type)) {
-      inputs.request_id = activeRequestId;
-      node.inputs = inputs;
-      continue;
+function applyAdvRequestPatchToGraph(data, graph = app.graph) {
+  const patch = advRequestPatchForRunData(data);
+  if (!Object.keys(patch).length) return false;
+  for (const node of graphNodes(graph)) {
+    if (nodeClass(node) !== ADV_REQUEST_CLASS) continue;
+    for (const [name, value] of Object.entries(patch)) {
+      setWidgetValue(node, name, value, { callback: false });
     }
-    const group = SLOT_NODE_GROUPS[node.class_type];
-    if (!group) {
-      continue;
+    syncAdvRequestSlots(node);
+    updateAdvRequestSummary(node);
+    if (Object.prototype.hasOwnProperty.call(patch, "image_count")) {
+      refreshAdvRequestOutputs(node, patch.image_count);
     }
-    const slotId = String(inputs.slot_id || "");
-    if (slotId && Object.prototype.hasOwnProperty.call(slots[group] || {}, slotId)) {
-      inputs.fallback = slots[group][slotId];
-    }
-    node.inputs = inputs;
-    syncApiPromptNumericNode(node);
   }
+  if (graph === app.graph) {
+    markCanvasDirty();
+  }
+  return true;
 }
 
-function collectApiPromptSlots(prompt) {
-  const slots = { prompt: {}, seed: {}, float: {}, int: {}, boolean: {} };
-  for (const [, node] of apiPromptEntries(prompt)) {
-    const group = SLOT_NODE_GROUPS[node.class_type];
-    if (!group) continue;
-    syncApiPromptNumericNode(node);
-    const slotId = String(node.inputs?.slot_id || "");
-    if (!slotId) continue;
-    slots[group][slotId] = node.inputs?.fallback ?? "";
-  }
+function collectApiPromptSnapshot(prompt, data) {
+  const requestNode = apiPromptEntries(prompt).find(([, node]) => node.class_type === ADV_REQUEST_CLASS)?.[1];
   return {
     request_id: activeRequestId,
     feature_id: activeFeatureId,
-    slots,
+    slots: emptySlots(),
+    adv_request: requestNode ? advRequestForRunData(data) : {},
   };
 }
 
@@ -1872,9 +1423,6 @@ function createDetachedGraph(workflow) {
 function prepareGraphForPrompt(graph) {
   for (const node of graph.computeExecutionOrder(false)) {
     configureAdvRequestNode(node);
-    configureImageInputNode(node);
-    configureSlotNode(node);
-    configureSendNode(node);
     if (node.widgets) {
       for (const widget of node.widgets) {
         widget.beforeQueued?.();
@@ -1938,8 +1486,8 @@ async function queueDetachedWorkflow(featureId, data) {
     return await queueApiPromptWorkflow(workflow, data);
   }
   const graph = createDetachedGraph(workflow);
+  setHiddenProperty(graph, "__psBridgeRequestId", String(data.request_id || activeRequestId || ""));
   setActiveBridgeState(data, graph);
-  applySlots(data.slots || {}, graph);
   applyAdvRequestToGraph(data, graph);
   clearSendNodePreviews(graph);
   const slotsSnapshot = collectSlots(graph);
@@ -1964,14 +1512,14 @@ async function queueCurrentGraphWorkflow(data) {
     throw new Error("Current graph is missing Adv_Request. Add Adv_Request or use an API workflow.");
   }
   setActiveBridgeState(data);
-  applySlots(normalizeSlotsForGraph(data));
   applyAdvRequestToGraph(data);
   if (!status.has_send_to_ps) {
-    throw new Error("Current graph is missing Adv_SendToPS or PSBridgeSendToPS, so generated images cannot be returned to Photoshop.");
+    throw new Error("Current graph is missing Adv_SendToPS, so generated images cannot be returned to Photoshop.");
   }
   clearSendNodePreviews();
   const slotsSnapshot = collectSlots(app.graph);
   prepareGraphForPrompt(app.graph);
+  setHiddenProperty(app.graph, "__psBridgeRequestId", String(data.request_id || activeRequestId || ""));
 
   const promptData = await app.graphToPrompt(app.graph);
   assertBridgeSendNode(promptData.output);
@@ -1990,11 +1538,10 @@ async function queueApiPromptWorkflow(workflow, data) {
   const prompt = cloneWorkflow(workflow);
   setActiveBridgeState(data);
   applyAdvRequestToGraph(data);
-  applySlotsToApiPrompt(prompt, data.slots || {});
   applyAdvRequestToApiPrompt(prompt, data);
-  applyVpluginsRequestToApiPrompt(prompt, data);
+  applyRequestIdToApiPrompt(prompt, String(data.request_id || activeRequestId || ""));
   assertBridgeSendNode(prompt);
-  const slotsSnapshot = collectApiPromptSlots(prompt);
+  const slotsSnapshot = collectApiPromptSnapshot(prompt, data);
   try {
     const result = await postPrompt(prompt, prompt);
     api.dispatchEvent(new CustomEvent("promptQueued", { detail: { number: 0, batchCount: 1 } }));
@@ -2041,11 +1588,12 @@ async function handleMessage(type, data) {
     return;
   }
   if (type === "slots_update") {
-    if (data.execution_mode || data.mode) {
-      activeExecutionMode = normalizeExecutionMode(data.execution_mode || data.mode);
+    const updatePayload = explicitObject(data.payload) || {};
+    const executionMode = data.execution_mode || data.mode || updatePayload.execution_mode || updatePayload.mode;
+    if (executionMode) {
+      activeExecutionMode = normalizeExecutionMode(executionMode);
     }
-    applySlots(normalizeSlotsForGraph(data));
-    applyAdvRequestToGraph(data);
+    applyAdvRequestPatchToGraph(data);
     send("slots_snapshot", collectSlots());
   }
 }
@@ -2089,15 +1637,9 @@ app.registerExtension({
     if (nodeData.name === ADV_REQUEST_CLASS) {
       patchAdvRequestNode(nodeType);
     }
-    if (nodeData.name === IMAGE_NODE_CLASS) {
-      patchImageInputNode(nodeType);
-    }
-    if (SLOT_NODE_GROUPS[nodeData.name]) {
-      patchSlotNode(nodeType);
-    }
   },
   async beforeConfigureGraph(graphData) {
-    migrateAdvRequestWorkflowData(graphData);
+    sanitizeAdvRequestWorkflowData(graphData);
   },
   async setup() {
     installAdvRequestCanvasPatch();
@@ -2112,27 +1654,17 @@ app.registerExtension({
     syncCurrentGraphTestModeFromGraph({ dirty: false, adoptGraphId: true });
     for (const node of graphNodes()) {
       configureAdvRequestNode(node);
-      configureImageInputNode(node);
-      configureSlotNode(node);
-      configureSendNode(node);
     }
     sendClientCapabilities();
     send("slots_snapshot", collectSlots());
   },
   nodeCreated(node) {
     if (nodeClass(node) === ADV_REQUEST_CLASS) {
-      configureAdvRequestNode(node);
+      queueMicrotask(() => configureAdvRequestNode(node));
       connect();
       return;
     }
-    if (nodeClass(node) === IMAGE_NODE_CLASS) {
-      configureImageInputNode(node);
-      connect();
-      return;
-    }
-    if (SLOT_NODE_GROUPS[nodeClass(node)] || isSendNodeClass(nodeClass(node))) {
-      configureSlotNode(node);
-      configureSendNode(node);
+    if (isSendNodeClass(nodeClass(node))) {
       connect();
       setTimeout(() => send("slots_snapshot", collectSlots()), 0);
     }

@@ -98,7 +98,7 @@ class ManagerRenderResultTests(unittest.TestCase):
         for field in ("image", "png", "base64", "image_png"):
             self.assertNotIn(field, image)
 
-    def test_strip_inline_images_for_file_ref_keeps_legacy_inline_when_enabled(self):
+    def test_strip_inline_images_for_file_ref_keeps_optional_inline_data_when_enabled(self):
         payload = {"images": [{"filename": "result.png", "image": b"png"}]}
 
         with patch.dict(os.environ, {"PS_BRIDGE_RENDER_INLINE_IMAGE": "1"}, clear=False):
@@ -172,7 +172,7 @@ class SendToPSProtocolTests(unittest.TestCase):
         self.assertTrue(all(result["request_id"] == "task-batch" for result in payload["images"]))
         self.assertTrue(all(result["type"] == "temp" for result in payload["images"]))
 
-    def test_send_to_ps_legacy_inline_mode_can_return_image_bytes(self):
+    def test_send_to_ps_optional_inline_mode_can_return_image_bytes(self):
         image = Image.new("RGBA", (1, 1), (255, 255, 255, 255))
         state = {"request_id": "task-inline", "images": {}}
 

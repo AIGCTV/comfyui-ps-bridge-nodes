@@ -1,4 +1,6 @@
-# Adv Send To Photoshop
+# PS Bridge Send To Photoshop
+
+Node ID: `Adv_SendToPS`
 
 Terminal output node for PS Bridge workflows.
 

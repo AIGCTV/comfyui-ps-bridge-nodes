@@ -1,6 +1,6 @@
 export const PS_SUMMARY_WIDGET_NAME = "PS Summary";
 export const ADV_REQUEST_CLASS = "Adv_Request";
-export const SEND_NODE_CLASSES = new Set(["Adv_SendToPS", "PSBridgeSendToPS"]);
+export const SEND_NODE_CLASSES = new Set(["Adv_SendToPS"]);
 
 export function normalizeExecutionMode(value) {
   if (value === undefined || value === null || value === "") return "auto";

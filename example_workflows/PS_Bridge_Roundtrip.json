@@ -30,7 +30,8 @@
         { "name": "REQUEST_JSON", "type": "STRING", "links": null }
       ],
       "properties": {
-        "Node name for S&R": "Adv_Request"
+        "Node name for S&R": "Adv_Request",
+        "ps_bridge_widget_schema": 2
       },
       "widgets_values": [
         1,
@@ -39,14 +40,7 @@
         0.65,
         1,
         42,
-        "{}",
-        "",
-        "",
-        "",
-        "",
-        "",
-        "",
-        ""
+        "randomize"
       ]
     },
     {
@@ -65,7 +59,7 @@
       "properties": {
         "Node name for S&R": "Adv_SendToPS"
       },
-      "widgets_values": ["PSBridge", ""]
+      "widgets_values": ["PSBridge"]
     }
   ],
   "links": [

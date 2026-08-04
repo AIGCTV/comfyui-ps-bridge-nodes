@@ -8,10 +8,10 @@ separate companion project and is not included or licensed by this repository.
 
 ## What is included
 
-- `Adv_Request` — receives up to six images, a mask, prompt, seed, and custom
-  parameters from a bridge client
-- `Adv_SendToPS` — returns a generated image and optional alpha mask
-- Legacy compatibility nodes for existing workflows
+- `PS Bridge Send To ComfyUI` (`Adv_Request`) — receives up to six images, a
+  mask, prompt, seed, and custom parameters from a bridge client
+- `PS Bridge Send To Photoshop` (`Adv_SendToPS`) — returns a generated image
+  and optional alpha mask
 - Local HTTP/WebSocket bridge routes
 - A safe minimal roundtrip example with no model names, prompts, or local paths
 
@@ -50,8 +50,9 @@ Restart ComfyUI after installation.
 
 1. Open `example_workflows/PS_Bridge_Roundtrip.json` in ComfyUI.
 2. Connect your compatible Photoshop bridge client.
-3. Send an image to the `Adv_Request` node.
-4. Run the workflow. `Adv_SendToPS` returns the result to the requesting client.
+3. Send an image to `PS Bridge Send To ComfyUI` (`Adv_Request`).
+4. Run the workflow. `PS Bridge Send To Photoshop` (`Adv_SendToPS`) returns the
+   result to the requesting client.
 
 `data/workflows/example-roundtrip.json` is the matching API-format example used
 by bridge clients. Private production workflows are intentionally not shipped.
@@ -80,10 +81,14 @@ ComfyUI behind HTTPS/WSS. Public-internet client addresses are rejected.
 See [docs/bridge-protocol-v1.md](docs/bridge-protocol-v1.md) for the protocol
 boundary and compatibility rules.
 
-## Node compatibility
+## Supported nodes
 
-New workflows should use `Adv_Request` and `Adv_SendToPS`. These legacy IDs stay
-registered so older workflows continue to open:
+The package registers exactly these two node IDs:
+
+- `Adv_Request` — displayed as `PS Bridge Send To ComfyUI`
+- `Adv_SendToPS` — displayed as `PS Bridge Send To Photoshop`
+
+All former node IDs have been removed and are unsupported:
 
 - `VpluginsRequest`
 - `PSBridgeImageInput`
@@ -94,6 +99,9 @@ registered so older workflows continue to open:
 - `PSBridgeInt`
 - `PSBridgeBoolean`
 - `PSBridgeAnyReroute`
+
+No aliases or automatic migrations are provided. Workflows containing any of
+these retired IDs must be rebuilt with the two supported nodes.
 
 ## Development
 
@@ -106,7 +114,7 @@ python -m unittest discover -s tests -p "test_*.py" -v
 Run the frontend contract tests with Node.js:
 
 ```bash
-node --test tests/adv_request_contract_test.mjs tests/adv_request_summary_test.mjs
+node --test tests/adv_request_contract_test.mjs tests/adv_request_persistence_test.mjs tests/adv_request_summary_test.mjs
 ```
 
 The public release contents and exclusions are recorded in

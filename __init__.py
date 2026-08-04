@@ -5,15 +5,6 @@ from comfy_api.latest import ComfyExtension, io
 from .ps_bridge.nodes import (
     AdvSendToPS,
     AdvRequest,
-    PSBridgeAnyReroute,
-    PSBridgeBoolean,
-    PSBridgeFloat,
-    PSBridgeImageInput,
-    PSBridgeInt,
-    PSBridgePrompt,
-    PSBridgeSeed,
-    PSBridgeSendToPS,
-    VpluginsRequest,
 )
 from .ps_bridge.routes import register_routes
 
@@ -31,15 +22,6 @@ class PSBridgeExtension(ComfyExtension):
         return [
             AdvRequest,
             AdvSendToPS,
-            PSBridgeSendToPS,
-            VpluginsRequest,
-            PSBridgeImageInput,
-            PSBridgeSeed,
-            PSBridgePrompt,
-            PSBridgeFloat,
-            PSBridgeInt,
-            PSBridgeBoolean,
-            PSBridgeAnyReroute,
         ]
 
 

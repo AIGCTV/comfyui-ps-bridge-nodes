@@ -7,12 +7,22 @@ venv/
 env/
 .env
 .env.*
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+secrets*.json
 
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
 .coverage
 htmlcov/
+*.log
+*.tmp
+*.bak
+*.swp
 
 build/
 dist/
@@ -20,16 +30,18 @@ dist/
 
 .DS_Store
 Thumbs.db
+.idea/
+.vscode/
 
 # Local reference checkout; keep it on disk but out of this repository.
 cankao/
 
-# Runtime Photoshop input cache.
+# Runtime Photoshop input and render caches. These contain user-generated data.
 data/ps_inputs/
 data/renders/
 
-# Workflow files created or imported locally stay private. Only the curated
-# manifest and public example are tracked.
+# Workflow files created or imported locally are runtime/private data. Only the
+# reviewed public manifest and synthetic API-format example may be committed.
 data/workflows/*
 !data/workflows/manifest.json
 !data/workflows/example-roundtrip.json

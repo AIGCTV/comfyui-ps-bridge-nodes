@@ -16,8 +16,6 @@ import ps_bridge.storage as storage
 from ps_bridge.security import safe_png_filename, validate_workflow_id
 from ps_bridge.storage import (
     adv_request_from_payload,
-    constrain_float_slot_value,
-    constrain_int_slot_value,
     image_from_payload,
     image_from_raw_rgba,
     image_slot_id,
@@ -25,8 +23,6 @@ from ps_bridge.storage import (
     mask_image_from_payload,
     merge_slots,
     normalize_slots_for_payload,
-    vplugins_request_from_payload,
-    workflow_slot_ids_for_feature,
 )
 
 
@@ -36,8 +32,8 @@ class SecurityTests(unittest.TestCase):
             validate_workflow_id("../bad")
 
     def test_safe_png_filename_is_deterministic(self):
-        self.assertEqual(safe_png_filename("MAIN"), safe_png_filename("MAIN"))
-        self.assertTrue(safe_png_filename("MAIN").endswith(".png"))
+        self.assertEqual(safe_png_filename("IMAGE_1"), safe_png_filename("IMAGE_1"))
+        self.assertTrue(safe_png_filename("IMAGE_1").endswith(".png"))
 
 
 class ImageConversionTests(unittest.TestCase):
@@ -86,147 +82,50 @@ class ImageConversionTests(unittest.TestCase):
         self.assertEqual(mask.getpixel((2, 1)), 128)
 
 
-class SlotTests(unittest.TestCase):
-    def test_image_slot_id_accepts_labels_and_legacy_main(self):
+class BridgeStateTests(unittest.TestCase):
+    def test_image_slot_id_accepts_current_ids_and_labels(self):
+        self.assertEqual(image_slot_id("IMAGE_1"), "IMAGE_1")
         self.assertEqual(image_slot_id("Image 2"), "IMAGE_2")
-        self.assertEqual(image_slot_id("MAIN"), "IMAGE_1")
-        self.assertEqual(image_slot_id("6"), "IMAGE_6")
+        self.assertEqual(image_slot_id("IMAGE_6"), "IMAGE_6")
 
-    def test_image_slot_id_maps_reference_aliases_after_main(self):
-        self.assertEqual(image_slot_id("REF_1"), "IMAGE_2")
-        self.assertEqual(image_slot_id("REF_2"), "IMAGE_3")
-        self.assertEqual(image_slot_id("reference 3"), "IMAGE_4")
-
-    def test_numeric_constraints_match_frontend_rules(self):
-        self.assertEqual(constrain_float_slot_value("0.26", 0, 0, 1, 0.1), 0.3)
-        self.assertEqual(constrain_float_slot_value("bad", 0.25, 1, 0, 0.1), 0.3)
-        self.assertEqual(constrain_int_slot_value("7.6", 0, 0, 20, 5), 10)
-        self.assertEqual(constrain_int_slot_value("bad", 12, 20, 0, 5), 10)
-        self.assertEqual(constrain_int_slot_value(1024, 30, -1000000, 1000000, 1), 1024)
-        self.assertEqual(constrain_float_slot_value(7.5, 0.5, -100000.0, 100000.0, 0.01), 7.5)
-
-    def test_workflow_slot_ids_extracts_api_prompt_slots(self):
-        workflow = {
-            "1": {
-                "class_type": "PSBridgePrompt",
-                "inputs": {"slot_id": "positive", "fallback": ""},
-            },
-            "2": {
-                "class_type": "PSBridgeSeed",
-                "inputs": {"slot_id": "MAIN", "fallback": 42},
-            },
-            "3": {
-                "class_type": "PSBridgeInt",
-                "inputs": {"slot_id": "steps", "fallback": 20},
-            },
-        }
-        with TemporaryDirectory() as temp_dir, patch.object(storage, "WORKFLOWS_DIR", Path(temp_dir)):
-            (Path(temp_dir) / "TEST.json").write_text(
-                json.dumps(workflow),
-                encoding="utf-8",
-            )
-            slots = workflow_slot_ids_for_feature("TEST")
-        self.assertEqual(slots["prompt"], ["positive"])
-        self.assertEqual(slots["seed"], ["MAIN"])
-        self.assertEqual(slots["int"], ["steps"])
-
-    def test_normalize_slots_for_payload_maps_single_shorthand_slot(self):
-        slots = normalize_slots_for_payload(
-            {"prompt": "a cat", "seed": 42, "int": 3},
-            {
-                "prompt": ["positive"],
-                "seed": ["MAIN"],
-                "float": [],
-                "int": ["steps"],
-                "boolean": [],
-            },
-        )
-        self.assertEqual(slots["prompt"], {"positive": "a cat"})
-        self.assertEqual(slots["seed"], {"MAIN": 42})
-        self.assertEqual(slots["int"], {"steps": 3})
-
-    def test_normalize_slots_for_payload_does_not_guess_multiple_slots(self):
-        slots = normalize_slots_for_payload({"prompt": "a cat"}, {"prompt": ["positive", "negative"]})
-        self.assertEqual(slots["prompt"], {})
-
-    def test_normalize_slots_for_payload_keeps_explicit_multiple_int_slots(self):
+    def test_normalize_slots_for_payload_keeps_explicit_protocol_slots(self):
         slots = normalize_slots_for_payload(
             {
                 "slots": {
-                    "seed": {"main": 123},
-                    "int": {"width": 768, "height": 512, "batchCount": 3},
+                    "prompt": {"prompt": "a cat"},
+                    "seed": {"seed": 123},
+                    "float": {"strength": 0.65},
+                    "int": {"batch_count": 3},
                 },
             },
-            {
-                "seed": ["MAIN"],
-                "int": ["width", "height", "batch_count"],
-            },
+            {},
         )
-        self.assertEqual(slots["seed"], {"MAIN": 123})
-        self.assertEqual(slots["int"]["width"], 768)
-        self.assertEqual(slots["int"]["height"], 512)
-        self.assertEqual(slots["int"]["batch_count"], 3)
-
-    def test_normalize_slots_for_payload_maps_settings_and_params_by_slot_id(self):
-        slots = normalize_slots_for_payload(
-            {
-                "seed": 99,
-                "settings": {"width": 1024, "height": 768, "batchCount": 2, "denoise": 0.65},
-                "params": {"cfg": 7.5},
-            },
-            {
-                "seed": ["MAIN"],
-                "float": ["denoise", "cfg"],
-                "int": ["width", "height", "batch_count"],
-            },
-        )
-        self.assertEqual(slots["seed"], {"MAIN": 99})
-        self.assertEqual(slots["int"]["width"], 1024)
-        self.assertEqual(slots["int"]["height"], 768)
-        self.assertEqual(slots["int"]["batch_count"], 2)
-        self.assertEqual(slots["float"]["denoise"], 0.65)
-        self.assertEqual(slots["float"]["cfg"], 7.5)
-
-    def test_normalize_slots_for_payload_prefers_explicit_slots(self):
-        slots = normalize_slots_for_payload(
-            {
-                "slots": {"int": {"batchCount": 2, "width": 512}, "seed": {"MAIN": 111}},
-                "seed": 222,
-                "int": {"batch_count": 3, "width": 768},
-                "settings": {"width": 1024},
-            },
-            {
-                "seed": ["MAIN"],
-                "int": ["batch_count", "width"],
-            },
-        )
-        self.assertEqual(slots["seed"], {"MAIN": 111})
-        self.assertEqual(slots["int"]["batch_count"], 2)
-        self.assertEqual(slots["int"]["width"], 512)
+        self.assertEqual(slots["prompt"], {"prompt": "a cat"})
+        self.assertEqual(slots["seed"], {"seed": 123})
+        self.assertEqual(slots["float"], {"strength": 0.65})
+        self.assertEqual(slots["int"], {"batch_count": 3})
 
     def test_merge_slots_update_keeps_unspecified_values(self):
         slots = merge_slots(
             {
-                "prompt": {"positive": "old"},
-                "seed": {"MAIN": 11},
-                "int": {"width": 512, "height": 768, "batch_count": 1},
-                "float": {"cfg": 7.5},
-                "boolean": {"enabled": True},
+                "prompt": {"prompt": "old"},
+                "seed": {"seed": 11},
+                "int": {"batch_count": 1},
+                "float": {"strength": 0.5},
             },
             {
-                "prompt": {"positive": "new"},
-                "int": {"width": 1024},
+                "prompt": {"prompt": "new"},
+                "float": {"strength": 0.8},
             },
         )
-        self.assertEqual(slots["prompt"], {"positive": "new"})
-        self.assertEqual(slots["seed"], {"MAIN": 11})
-        self.assertEqual(slots["int"], {"width": 1024, "height": 768, "batch_count": 1})
-        self.assertEqual(slots["float"], {"cfg": 7.5})
-        self.assertEqual(slots["boolean"], {"enabled": True})
+        self.assertEqual(slots["prompt"], {"prompt": "new"})
+        self.assertEqual(slots["seed"], {"seed": 11})
+        self.assertEqual(slots["int"], {"batch_count": 1})
+        self.assertEqual(slots["float"], {"strength": 0.8})
 
     def test_is_api_prompt_workflow_rejects_graph_workflows(self):
-        self.assertTrue(is_api_prompt_workflow({"1": {"class_type": "PSBridgePrompt", "inputs": {}}}))
-        self.assertFalse(is_api_prompt_workflow({"nodes": [{"type": "PSBridgePrompt"}]}))
+        self.assertTrue(is_api_prompt_workflow({"1": {"class_type": "Adv_Request", "inputs": {}}}))
+        self.assertFalse(is_api_prompt_workflow({"nodes": [{"type": "Adv_Request"}]}))
 
     def test_execution_mode_ignores_non_execution_mode_alias(self):
         self.assertEqual(storage.execution_mode_for_payload({"mode": "inpaint"}, "roundtrip"), "auto")
@@ -235,79 +134,66 @@ class SlotTests(unittest.TestCase):
             storage.execution_mode_for_payload({"execution_mode": "inpaint"}, "roundtrip")
 
 
-class VpluginsRequestTests(unittest.TestCase):
-    def test_vplugins_request_uses_prompt_and_run_params(self):
-        request = vplugins_request_from_payload(
-            {
-                "prompt": "a cat",
-                "settings": {"resolution": "1k"},
-                "params": {"strength": 0.65},
-                "batchCount": 2,
-            }
-        )
-        self.assertEqual(request["main_image"], "")
-        self.assertEqual(request["mask_image"], "")
-        self.assertEqual(request["prompt"], "a cat")
-        self.assertEqual(json.loads(request["params_json"]), {"resolution": "1k", "strength": 0.65, "batchCount": 2})
-
-    def test_vplugins_request_falls_back_to_legacy_slots(self):
-        request = vplugins_request_from_payload(
-            {
-                "slots": {
-                    "prompt": {"positive": "a city"},
-                    "seed": {"MAIN": 123},
-                    "float": {"strength": 0.5},
-                    "int": {"batch_count": 1},
-                }
-            }
-        )
-        self.assertEqual(request["prompt"], "a city")
-        self.assertEqual(
-            json.loads(request["params_json"]),
-            {"seed": {"MAIN": 123}, "float": {"strength": 0.5}, "int": {"batch_count": 1}},
-        )
-
-
 class AdvRequestTests(unittest.TestCase):
-    def test_adv_request_uses_prompt_and_run_params(self):
+    def test_adv_request_uses_current_request_object(self):
         request = adv_request_from_payload(
             {
-                "prompt": "a cat",
-                "image_count": 3,
-                "settings": {"resolution": "1k"},
-                "params": {"strength": 0.65},
-                "batchCount": 2,
-                "seed": 1379,
+                "adv_request": {
+                    "image_count": 3,
+                    "prompt": "a cat",
+                    "resolution": "2k",
+                    "strength": 0.65,
+                    "batch_count": 2,
+                    "seed": 1379,
+                    "params_json": {"model": "example"},
+                },
             }
         )
         self.assertEqual(request["image_count"], 3)
         self.assertEqual(request["prompt"], "a cat")
-        self.assertEqual(request["resolution"], "1k")
+        self.assertEqual(request["resolution"], "2k")
         self.assertEqual(request["strength"], 0.65)
         self.assertEqual(request["batch_count"], 2)
         self.assertEqual(request["seed"], 1379)
-        self.assertEqual(json.loads(request["params_json"]), {"resolution": "1k", "strength": 0.65, "batchCount": 2, "seed": 1379})
+        self.assertEqual(json.loads(request["params_json"]), {"model": "example"})
 
-    def test_adv_request_falls_back_to_legacy_slots(self):
-        request = adv_request_from_payload(
-            {
-                "slots": {
-                    "prompt": {"positive": "a city"},
-                    "seed": {"MAIN": 123},
-                    "float": {"strength": 0.5},
-                    "int": {"batch_count": 4},
-                }
-            }
-        )
+    def test_adv_request_defaults_are_current_node_defaults(self):
+        request = adv_request_from_payload({})
         self.assertEqual(request["image_count"], 1)
-        self.assertEqual(request["prompt"], "a city")
-        self.assertEqual(request["strength"], 0.5)
-        self.assertEqual(request["batch_count"], 4)
-        self.assertEqual(request["seed"], 123)
+        self.assertEqual(request["prompt"], "")
+        self.assertEqual(request["resolution"], "1k")
+        self.assertEqual(request["strength"], 0.65)
+        self.assertEqual(request["batch_count"], 1)
+        self.assertEqual(request["seed"], 42)
+        self.assertEqual(request["params_json"], "{}")
 
-    def test_adv_request_clamps_batch_count(self):
-        self.assertEqual(adv_request_from_payload({"batchCount": 54})["batch_count"], 4)
-        self.assertEqual(adv_request_from_payload({"batchCount": 0})["batch_count"], 1)
+    def test_adv_request_clamps_current_numeric_fields(self):
+        high = adv_request_from_payload(
+            {"adv_request": {"image_count": 99, "batch_count": 54, "seed": -1, "strength": 8}}
+        )
+        low = adv_request_from_payload({"adv_request": {"image_count": 0, "batch_count": 0, "strength": -2}})
+        self.assertEqual(high["image_count"], 6)
+        self.assertEqual(high["batch_count"], 4)
+        self.assertEqual(high["seed"], 0)
+        self.assertEqual(high["strength"], 1.0)
+        self.assertEqual(low["image_count"], 1)
+        self.assertEqual(low["batch_count"], 1)
+        self.assertEqual(low["strength"], 0.0)
+
+    def test_adv_request_rejects_infinity_and_preserves_uint64_seed(self):
+        infinite = adv_request_from_payload(
+            {"adv_request": {"image_count": float("inf"), "batch_count": float("inf"), "seed": float("inf")}}
+        )
+        precise = adv_request_from_payload({"adv_request": {"seed": 9007199254740993}})
+        maximum = adv_request_from_payload({"adv_request": {"seed": 0xFFFFFFFFFFFFFFFF}})
+        oversized = adv_request_from_payload({"adv_request": {"seed": 0x10000000000000000}})
+
+        self.assertEqual(infinite["image_count"], 1)
+        self.assertEqual(infinite["batch_count"], 1)
+        self.assertEqual(infinite["seed"], 42)
+        self.assertEqual(precise["seed"], 9007199254740993)
+        self.assertEqual(maximum["seed"], 0xFFFFFFFFFFFFFFFF)
+        self.assertEqual(oversized["seed"], 0xFFFFFFFFFFFFFFFF)
 
 
 class IngestRunPayloadTests(unittest.TestCase):
@@ -330,7 +216,12 @@ class IngestRunPayloadTests(unittest.TestCase):
 
         ensure_dirs()
         (workflows_dir / "roundtrip.json").write_text(
-            json.dumps({"1": {"class_type": "PSBridgePrompt", "inputs": {"slot_id": "positive"}}}),
+            json.dumps(
+                {
+                    "1": {"class_type": "Adv_Request", "inputs": {}},
+                    "2": {"class_type": "Adv_SendToPS", "inputs": {}},
+                }
+            ),
             encoding="utf-8",
         )
         patches = [
@@ -350,7 +241,7 @@ class IngestRunPayloadTests(unittest.TestCase):
                         "feature_id": "roundtrip",
                         "request_id": "task-1",
                         "images": {
-                            "MAIN": {
+                            "IMAGE_1": {
                                 "width": 2,
                                 "height": 1,
                                 "png": self._encoded_image(),
@@ -359,7 +250,7 @@ class IngestRunPayloadTests(unittest.TestCase):
                                 "document": {"id": 7, "name": "A.psd"},
                                 "documentId": 7,
                             },
-                            "REF_1": {
+                            "IMAGE_2": {
                                 "width": 2,
                                 "height": 1,
                                 "png": self._encoded_image((0, 255, 0, 255)),
@@ -367,7 +258,7 @@ class IngestRunPayloadTests(unittest.TestCase):
                         },
                         "selection": {"width": 2, "height": 1, "mask": bytes([0, 255])},
                         "selections": {
-                            "REF_1": {"width": 2, "height": 1, "mask": bytes([255, 0])},
+                            "IMAGE_2": {"width": 2, "height": 1, "mask": bytes([255, 0])},
                         },
                     }
                 )
@@ -414,17 +305,17 @@ class IngestRunPayloadTests(unittest.TestCase):
                 self.assertEqual(Image.open(images_dir / "IMAGE_1.png").getpixel((0, 0)), (0, 0, 255, 255))
                 self.assertEqual(Image.open(images_dir / "IMAGE_2.png").getpixel((0, 0)), (0, 0, 0, 255))
 
-    def test_load_bridge_image_only_falls_back_to_legacy_main_for_image_1(self):
+    def test_load_bridge_image_reads_only_the_requested_current_slot(self):
         temp_dir, patches, images_dir, _latest_path = self._patched_storage()
         with temp_dir:
             with patches[0], patches[1], patches[2], patches[3]:
-                main_filename = safe_png_filename("MAIN")
-                Image.new("RGBA", (1, 1), (255, 0, 0, 255)).save(images_dir / main_filename)
+                image_1_filename = "IMAGE_1.png"
+                Image.new("RGBA", (1, 1), (255, 0, 0, 255)).save(images_dir / image_1_filename)
                 storage.save_state(
                     {
                         "images": {
-                            "MAIN": {
-                                "filename": main_filename,
+                            "IMAGE_1": {
+                                "filename": image_1_filename,
                                 "width": 1,
                                 "height": 1,
                                 "mode": "RGBA",

@@ -8,8 +8,7 @@ from aiohttp import ClientSession
 from . import storage
 
 
-SEND_NODE_CLASSES = {"Adv_SendToPS", "PSBridgeSendToPS"}
-VPLUGINS_REQUEST_CLASS = "VpluginsRequest"
+SEND_NODE_CLASS = "Adv_SendToPS"
 ADV_REQUEST_CLASS = "Adv_Request"
 
 
@@ -25,41 +24,10 @@ def _api_prompt_entries(prompt: dict[str, Any]) -> list[tuple[str, dict[str, Any
     ]
 
 
-def _sync_api_prompt_numeric_node(node: dict[str, Any]) -> None:
-    class_type = node.get("class_type")
-    inputs = node.setdefault("inputs", {})
-    if class_type == "PSBridgeFloat":
-        inputs["fallback"] = storage.constrain_float_slot_value(
-            inputs.get("fallback"),
-            inputs.get("fallback"),
-            inputs.get("min_value"),
-            inputs.get("max_value"),
-            inputs.get("step"),
-        )
-    elif class_type == "PSBridgeInt":
-        inputs["fallback"] = storage.constrain_int_slot_value(
-            inputs.get("fallback"),
-            inputs.get("fallback"),
-            inputs.get("min_value"),
-            inputs.get("max_value"),
-            inputs.get("step"),
-        )
-
-
-def _apply_slots_to_api_prompt(prompt: dict[str, Any], slots: dict[str, Any], request_id: str) -> None:
+def _apply_request_id_to_send_node(prompt: dict[str, Any], request_id: str) -> None:
     for _node_id, node in _api_prompt_entries(prompt):
-        class_type = node.get("class_type")
-        inputs = node.setdefault("inputs", {})
-        if class_type in SEND_NODE_CLASSES:
-            inputs["request_id"] = request_id
-            continue
-        group = storage.SLOT_NODE_GROUPS.get(str(class_type))
-        if not group:
-            continue
-        slot_id = str(inputs.get("slot_id") or "")
-        if slot_id and slot_id in (slots.get(group) or {}):
-            inputs["fallback"] = slots[group][slot_id]
-        _sync_api_prompt_numeric_node(node)
+        if node.get("class_type") == SEND_NODE_CLASS:
+            node.setdefault("inputs", {})["request_id"] = request_id
 
 
 def _apply_adv_request_to_api_prompt(prompt: dict[str, Any], state: dict[str, Any]) -> None:
@@ -77,29 +45,13 @@ def _apply_adv_request_to_api_prompt(prompt: dict[str, Any], state: dict[str, An
         inputs["batch_count"] = request.get("batch_count", 1)
         inputs["seed"] = request.get("seed", 42)
         inputs["params_json"] = request.get("params_json", "{}")
-        inputs.pop("send_to_ps", None)
-        inputs.pop("sendToPs", None)
         for index in range(1, storage.ADV_REQUEST_MAX_IMAGES + 1):
             inputs[f"image_{index}_file"] = ""
         inputs["mask_image_file"] = ""
 
 
-def _apply_vplugins_request_to_api_prompt(prompt: dict[str, Any], state: dict[str, Any]) -> None:
-    request = state.get("vplugins_request")
-    if not isinstance(request, dict):
-        request = {}
-    for _node_id, node in _api_prompt_entries(prompt):
-        if node.get("class_type") != VPLUGINS_REQUEST_CLASS:
-            continue
-        inputs = node.setdefault("inputs", {})
-        inputs["main_image"] = request.get("main_image", "")
-        inputs["mask_image"] = request.get("mask_image", "")
-        inputs["prompt"] = request.get("prompt", "")
-        inputs["params_json"] = request.get("params_json", "{}")
-
-
 def _has_send_node(prompt: dict[str, Any]) -> bool:
-    return any(node.get("class_type") in SEND_NODE_CLASSES for _node_id, node in _api_prompt_entries(prompt))
+    return any(node.get("class_type") == SEND_NODE_CLASS for _node_id, node in _api_prompt_entries(prompt))
 
 
 def patched_api_prompt_for_state(workflow: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
@@ -108,12 +60,11 @@ def patched_api_prompt_for_state(workflow: dict[str, Any], state: dict[str, Any]
 
     prompt = copy.deepcopy(workflow)
     request_id = str(state.get("request_id") or "")
-    _apply_slots_to_api_prompt(prompt, state.get("slots") or {}, request_id)
+    _apply_request_id_to_send_node(prompt, request_id)
     _apply_adv_request_to_api_prompt(prompt, state)
-    _apply_vplugins_request_to_api_prompt(prompt, state)
 
     if not _has_send_node(prompt):
-        raise BackendRunnerError("Workflow is missing Adv_SendToPS or PSBridgeSendToPS, so generated images cannot be returned to Photoshop.")
+        raise BackendRunnerError("Workflow is missing Adv_SendToPS, so generated images cannot be returned to Photoshop.")
     return prompt
 
 
@@ -126,7 +77,7 @@ async def queue_api_workflow_for_state(
 ) -> dict[str, Any]:
     if not base_url:
         raise BackendRunnerError("Unable to submit backend workflow: missing ComfyUI base URL.")
-    workflow = storage.migrated_workflow_for_feature(feature_id)
+    workflow = storage.workflow_for_feature(feature_id)
     prompt = patched_api_prompt_for_state(workflow, state)
     body = {
         "client_id": client_id,

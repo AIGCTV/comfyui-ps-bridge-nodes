@@ -103,5 +103,9 @@ assert.deepEqual(
   graphStatusFromNodeClasses(["Adv_Request", "KSampler"]),
   { has_adv_request: true, has_send_to_ps: false, current_graph_ready: false },
 );
+assert.deepEqual(
+  graphStatusFromNodeClasses(["Adv_Request", "PSBridgeSendToPS"]),
+  { has_adv_request: true, has_send_to_ps: false, current_graph_ready: false },
+);
 
 console.log("Adv_Request summary tests passed");
