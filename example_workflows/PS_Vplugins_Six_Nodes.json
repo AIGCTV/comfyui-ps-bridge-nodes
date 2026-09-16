@@ -1,0 +1,319 @@
+{
+  "id": "0578f11f-1059-4e20-9f1b-2d252f83536f",
+  "revision": 0,
+  "last_node_id": 6,
+  "last_link_id": 0,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "VP_Image",
+      "pos": [
+        100,
+        150
+      ],
+      "size": [
+        340,
+        450
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "RGB",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "ALPHA",
+          "type": "MASK",
+          "links": null
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        },
+        {
+          "name": "width",
+          "type": "INT",
+          "links": null
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VP_Image"
+      },
+      "widgets_values": [
+        "main",
+        true,
+        "six-main.png",
+        "",
+        "",
+        ""
+      ],
+      "widgets_values_named": {
+        "slot": "main",
+        "required": true,
+        "file_name": "six-main.png",
+        "selection_file": "",
+        "request_id": "",
+        "ps_controls": ""
+      },
+      "color": "#24364b",
+      "bgcolor": "#151e28",
+      "boxcolor": "#65c9e7"
+    },
+    {
+      "id": 3,
+      "type": "VP_Slider",
+      "pos": [
+        980,
+        150
+      ],
+      "size": [
+        310,
+        275
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "value",
+          "type": "FLOAT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VP_Slider"
+      },
+      "widgets_values": [
+        0.5,
+        0,
+        1,
+        0.1,
+        "strength",
+        "Strength",
+        "{\"kind\":\"canonical\",\"key\":\"strength\"}",
+        ""
+      ],
+      "widgets_values_named": {
+        "value": 0.5,
+        "min": 0,
+        "max": 1,
+        "step": 0.1,
+        "param_id": "strength",
+        "label": "Strength",
+        "source_json": "{\"kind\":\"canonical\",\"key\":\"strength\"}",
+        "ps_controls": ""
+      },
+      "color": "#24364b",
+      "bgcolor": "#151e28",
+      "boxcolor": "#65c9e7"
+    },
+    {
+      "id": 4,
+      "type": "VP_Prompt",
+      "pos": [
+        100,
+        630
+      ],
+      "size": [
+        310,
+        265
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VP_Prompt"
+      },
+      "widgets_values": [
+        "",
+        "prompt",
+        "Prompt",
+        "{\"kind\":\"canonical\",\"key\":\"prompt\"}",
+        ""
+      ],
+      "widgets_values_named": {
+        "text": "",
+        "param_id": "prompt",
+        "label": "Prompt",
+        "source_json": "{\"kind\":\"canonical\",\"key\":\"prompt\"}",
+        "ps_controls": ""
+      },
+      "color": "#24364b",
+      "bgcolor": "#151e28",
+      "boxcolor": "#65c9e7"
+    },
+    {
+      "id": 6,
+      "type": "VP_SendToPS",
+      "pos": [
+        980,
+        630
+      ],
+      "size": [
+        310,
+        190
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "label": "RGB",
+          "name": "images",
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "label": "ALPHA",
+          "name": "alpha",
+          "shape": 7,
+          "type": "MASK",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "RGB",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "ALPHA",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VP_SendToPS"
+      },
+      "widgets_values": [
+        "result",
+        "VPlugins",
+        "",
+        ""
+      ],
+      "widgets_values_named": {
+        "result_id": "result",
+        "filename_prefix": "VPlugins",
+        "request_id": "",
+        "ps_controls": ""
+      },
+      "color": "#24364b",
+      "bgcolor": "#151e28",
+      "boxcolor": "#65c9e7"
+    },
+    {
+      "id": 2,
+      "type": "VP_Seed",
+      "pos": [
+        540,
+        150
+      ],
+      "size": [
+        310,
+        240
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "seed",
+          "type": "INT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VP_Seed"
+      },
+      "widgets_values": [
+        "seed",
+        "Seed",
+        2791212630798400,
+        "fixed",
+        ""
+      ],
+      "widgets_values_named": {
+        "param_id": "seed",
+        "label": "Seed",
+        "value": 2791212630798400,
+        "mode": "fixed",
+        "ps_controls": ""
+      },
+      "color": "#24364b",
+      "bgcolor": "#151e28",
+      "boxcolor": "#65c9e7"
+    },
+    {
+      "id": 5,
+      "type": "VP_Batch",
+      "pos": [
+        540,
+        630
+      ],
+      "size": [
+        310,
+        185
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "count",
+          "type": "INT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VP_Batch"
+      },
+      "widgets_values": [
+        4,
+        ""
+      ],
+      "widgets_values_named": {
+        "value": 4,
+        "ps_controls": ""
+      },
+      "color": "#24364b",
+      "bgcolor": "#151e28",
+      "boxcolor": "#65c9e7"
+    }
+  ],
+  "links": [],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.9,
+      "offset": [
+        0,
+        0
+      ]
+    },
+    "frontendVersion": "1.49.6"
+  },
+  "version": 0.4
+}

@@ -1,0 +1,167 @@
+{
+  "VP_Image": {
+    "display_name": "PS Images",
+    "inputs": {
+      "slot": {
+        "name": "Image Name",
+        "options": {
+          "main": "main",
+          "ref1": "IMG2",
+          "ref2": "IMG3",
+          "ref3": "IMG4",
+          "ref4": "IMG5",
+          "ref5": "IMG6"
+        }
+      },
+      "required": {
+        "name": "Required"
+      },
+      "file_name": {
+        "name": "Image file"
+      },
+      "selection_file": {
+        "name": "Selection file"
+      },
+      "request_id": {
+        "name": "Request ID"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "RGB"
+      },
+      "1": {
+        "name": "ALPHA"
+      },
+      "2": {
+        "name": "MASK"
+      },
+      "3": {
+        "name": "width"
+      },
+      "4": {
+        "name": "height"
+      }
+    }
+  },
+  "VP_Prompt": {
+    "display_name": "PS Prompt",
+    "inputs": {
+      "text": {
+        "name": "Prompt"
+      },
+      "param_id": {
+        "name": "Parameter ID"
+      },
+      "label": {
+        "name": "Label"
+      },
+      "source_json": {
+        "name": "Source JSON"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "text"
+      }
+    }
+  },
+  "VP_Slider": {
+    "display_name": "PS Slider",
+    "inputs": {
+      "value": {
+        "name": "Value"
+      },
+      "min": {
+        "name": "MIN"
+      },
+      "max": {
+        "name": "MAX"
+      },
+      "step": {
+        "name": "STEP"
+      },
+      "param_id": {
+        "name": "Parameter ID"
+      },
+      "label": {
+        "name": "Label"
+      },
+      "source_json": {
+        "name": "Source JSON"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "value"
+      }
+    }
+  },
+  "VP_Batch": {
+    "display_name": "PS Batch",
+    "inputs": {
+      "value": {
+        "name": "Value"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "count"
+      }
+    }
+  },
+  "VP_Seed": {
+    "display_name": "PS Seed",
+    "inputs": {
+      "param_id": {
+        "name": "Parameter ID"
+      },
+      "label": {
+        "name": "Label"
+      },
+      "value": {
+        "name": "Seed"
+      },
+      "mode": {
+        "name": "Mode",
+        "options": {
+          "fixed": "Fixed",
+          "random": "Random"
+        }
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "seed"
+      }
+    }
+  },
+  "VP_SendToPS": {
+    "display_name": "Send to PS",
+    "inputs": {
+      "images": {
+        "name": "RGB"
+      },
+      "alpha": {
+        "name": "ALPHA"
+      },
+      "result_id": {
+        "name": "Result ID"
+      },
+      "filename_prefix": {
+        "name": "File name prefix"
+      },
+      "request_id": {
+        "name": "Request ID"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "RGB"
+      },
+      "1": {
+        "name": "ALPHA"
+      }
+    }
+  }
+}

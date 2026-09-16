@@ -1,0 +1,125 @@
+{
+  "VP_Seed": {
+    "inputs": {
+      "param_id": "STRING",
+      "label": "STRING",
+      "value": "INT",
+      "mode": "COMBO"
+    },
+    "outputs": [
+      {
+        "index": 0,
+        "name": "seed",
+        "type": "INT"
+      }
+    ],
+    "singleton": true
+  },
+  "VP_Slider": {
+    "inputs": {
+      "value": "FLOAT",
+      "min": "FLOAT",
+      "max": "FLOAT",
+      "step": "FLOAT",
+      "param_id": "STRING",
+      "label": "STRING",
+      "source_json": "STRING"
+    },
+    "outputs": [
+      {
+        "index": 0,
+        "name": "value",
+        "type": "FLOAT"
+      }
+    ],
+    "singleton": true
+  },
+  "VP_Prompt": {
+    "inputs": {
+      "text": "STRING",
+      "param_id": "STRING",
+      "label": "STRING",
+      "source_json": "STRING"
+    },
+    "outputs": [
+      {
+        "index": 0,
+        "name": "text",
+        "type": "STRING"
+      }
+    ],
+    "singleton": true
+  },
+  "VP_Batch": {
+    "inputs": {
+      "value": "INT"
+    },
+    "outputs": [
+      {
+        "index": 0,
+        "name": "count",
+        "type": "INT"
+      }
+    ],
+    "singleton": true
+  },
+  "VP_Image": {
+    "inputs": {
+      "slot": "COMBO",
+      "required": "BOOLEAN",
+      "file_name": "STRING",
+      "selection_file": "STRING",
+      "request_id": "STRING"
+    },
+    "outputs": [
+      {
+        "index": 0,
+        "name": "RGB",
+        "type": "IMAGE"
+      },
+      {
+        "index": 1,
+        "name": "ALPHA",
+        "type": "MASK"
+      },
+      {
+        "index": 2,
+        "name": "MASK",
+        "type": "MASK"
+      },
+      {
+        "index": 3,
+        "name": "width",
+        "type": "INT"
+      },
+      {
+        "index": 4,
+        "name": "height",
+        "type": "INT"
+      }
+    ],
+    "singleton": false
+  },
+  "VP_SendToPS": {
+    "inputs": {
+      "images": "IMAGE",
+      "alpha": "MASK",
+      "result_id": "STRING",
+      "filename_prefix": "STRING",
+      "request_id": "STRING"
+    },
+    "outputs": [
+      {
+        "index": 0,
+        "name": "RGB",
+        "type": "IMAGE"
+      },
+      {
+        "index": 1,
+        "name": "ALPHA",
+        "type": "MASK"
+      }
+    ],
+    "singleton": false
+  }
+}

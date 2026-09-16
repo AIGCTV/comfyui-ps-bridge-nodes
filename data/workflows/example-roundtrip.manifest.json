@@ -1,0 +1,119 @@
+{
+  "manifestVersion": 1,
+  "contractVersion": 3,
+  "featureId": "example-roundtrip",
+  "workflowId": "example-roundtrip",
+  "workflowVersion": "2.0.0",
+  "name": "PS Vplugins Roundtrip",
+  "providerId": "comfy_bridge",
+  "apiFile": "example-roundtrip.json",
+  "apiSha256": "f1910ee61482d536404fd8fd7f87d9aa4ee06996341f78d72392ca67a4e97126",
+  "parameters": [
+    {
+      "paramId": "strength",
+      "label": "Strength",
+      "source": {
+        "kind": "canonical",
+        "key": "strength"
+      },
+      "type": "float",
+      "min": 0,
+      "max": 1,
+      "step": 0.01,
+      "default": 1,
+      "target": {
+        "nodeId": "2",
+        "inputName": "value"
+      }
+    },
+    {
+      "paramId": "count",
+      "label": "Batch",
+      "type": "int",
+      "min": 1,
+      "max": 4,
+      "step": 1,
+      "source": {
+        "kind": "canonical",
+        "key": "count"
+      },
+      "default": 2,
+      "target": {
+        "nodeId": "3",
+        "inputName": "value"
+      }
+    }
+  ],
+  "images": [
+    {
+      "nodeId": "1",
+      "slot": "main",
+      "required": true
+    }
+  ],
+  "selection": {
+    "nodeId": "1",
+    "missingPolicy": "full"
+  },
+  "results": [
+    {
+      "nodeId": "6",
+      "resultId": "result",
+      "order": 0,
+      "required": true
+    }
+  ],
+  "runtimeTargets": [
+    {
+      "nodeId": "1",
+      "inputName": "request_id",
+      "source": "runId"
+    },
+    {
+      "nodeId": "1",
+      "inputName": "file_name",
+      "source": "empty"
+    },
+    {
+      "nodeId": "1",
+      "inputName": "selection_file",
+      "source": "empty"
+    },
+    {
+      "nodeId": "6",
+      "inputName": "request_id",
+      "source": "runId"
+    }
+  ],
+  "limits": {
+    "maxImages": 1,
+    "maxReferences": 0,
+    "count": {
+      "min": 1,
+      "max": 4
+    },
+    "maxResults": 4
+  },
+  "dependencies": {
+    "classTypes": [
+      "VP_Image",
+      "VP_Slider",
+      "VP_Batch",
+      "ImageScaleBy",
+      "RepeatImageBatch",
+      "VP_SendToPS",
+      "MaskToImage",
+      "PreviewImage"
+    ],
+    "nodePackages": [
+      {
+        "id": "comfyui-ps-bridge-nodes",
+        "contractVersion": 3
+      }
+    ],
+    "verifiedEnvironments": []
+  },
+  "uiFile": "example-roundtrip.ui.json",
+  "uiSha256": "02656906ad9179a392e5b07455dc77aa7139d30e96c9f71d5941d1d076504d4b",
+  "definitionSha256": "4dd896b247aed3235d899df1130de7ef1cdb697f866024c59403d89d316aa6d1"
+}

@@ -1,391 +1,449 @@
+"""Authenticated connection dispatch; all state is owned by scoped services."""
 from __future__ import annotations
-
 import asyncio
-import base64
+import copy
 import json
 import logging
-import os
+import threading
+import uuid
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Any
-
-from aiohttp import WSMsgType, web
-
-from . import __version__
-from . import backend_runner, storage
-from .protocol import (
-    BRIDGE_MAX_IMAGES,
-    BRIDGE_MAX_MESSAGE_BYTES,
-    BRIDGE_PROTOCOL_VERSION,
-    BRIDGE_SUPPORTED_ENCODINGS,
-)
-from .security import lan_access_enabled, lan_access_ready
-
-try:
-    import msgpack
-except ImportError:  # pragma: no cover - exercised in ComfyUI environments without requirements installed
-    msgpack = None
-
+from .errors import BridgeError, require
+from .json_codec import loads, digest
+from .protocol import contract_capabilities, BRIDGE_MAX_MESSAGE_BYTES
+from .identity import ClientIdentities
+from .parameter_sync import validate_scope
+from .schemas import validate_shape
+from .manager_notifications import ManagerNotifications
+from .diagnostics import trace
+from .manager_state import (notification_view, active_scopes, editor_current,
+                            control_transaction, disconnected)
 
 logger = logging.getLogger(__name__)
-INLINE_RENDER_IMAGE_ENV = "PS_BRIDGE_RENDER_INLINE_IMAGE"
-INLINE_RENDER_IMAGE_FIELDS = ("image", "png", "base64", "image_png")
-
-
-def inline_render_image_enabled() -> bool:
-    return os.getenv(INLINE_RENDER_IMAGE_ENV, "0").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def strip_inline_images_for_file_ref(payload: Any) -> Any:
-    if inline_render_image_enabled() or not isinstance(payload, dict):
-        return payload
-    images = payload.get("images")
-    if images is None and isinstance(payload.get("data"), dict):
-        images = payload["data"].get("images")
-    if not isinstance(images, list):
-        return payload
-    for image in images:
-        if isinstance(image, dict):
-            for field in INLINE_RENDER_IMAGE_FIELDS:
-                image.pop(field, None)
-    return payload
-
 
 @dataclass
 class BridgeClient:
-    ws: web.WebSocketResponse
-    role: str
     client_id: str
-    ip: str
-    base_url: str = ""
-    encoding: str = "json"
-    capabilities: dict[str, Any] = field(default_factory=dict)
-
+    role: str
+    ws: object
+    control_gate: object = field(default_factory=asyncio.Lock)
+    retired: bool = False
 
 class BridgeManager:
-    def __init__(self) -> None:
-        self.clients: dict[str, BridgeClient] = {}
+    def __init__(self, service):
+        self.service = service
+        self.identities = ClientIdentities(service.root / "clients.json")
+        self.clients = {}
+        self.loop = None
+        self.pending_captures = {}
+        self.last_run_event = {}
+        self.previews = {}
+        self.editor_pipeline_latest = {}
+        self.editor_delivery = {}
+        self.editor_delivery_lock = threading.Lock()
+        self.mode_subscribers = set()
+        self.presence_task = None
+        self.last_mode_revision = -1
+        self.notifications = ManagerNotifications(self._consume_notification, self._recover_notifications)
+        service.test_mode.on_change = self.mode_changed
+        service.sessions.on_commit = self.committed
+        service.preparation.on_prepared = self.preview_ready
+        if service.runner:
+            service.runner.notify = self.run_changed
+        if getattr(service, "pipeline", None):
+            service.pipeline.on_event = self.pipeline_changed
 
-    def role_clients(self, role: str, capability: str | None = None) -> list[str]:
-        clients = [client_id for client_id, client in self.clients.items() if client.role == role]
-        if capability:
-            clients = [
-                client_id
-                for client_id in clients
-                if bool(self.clients[client_id].capabilities.get(capability))
-            ]
-        return clients
+    def envelope(self, kind, payload, *, reply_to=None, session=None, token=None):
+        result = {"type": kind, "protocolVersion": 2, "contractVersion": 3, "messageId": uuid.uuid4().hex,
+                  "sourceClientId": "bridge-server", "payload": payload}
+        if reply_to is not None:
+            result["replyTo"] = reply_to
+        if session is not None:
+            result.update(sessionId=session["sessionId"], serverEpoch=self.service.sessions.epoch, attachToken=token)
+        return result
 
-    def primary_role_client(self, role: str, capability: str | None = None) -> str | None:
-        clients = self.role_clients(role, capability)
-        return clients[-1] if clients else None
+    async def send(self, client, kind, payload, **kwargs):
+        if not client.ws.closed:
+            message = self.envelope(kind, payload, **kwargs)
+            validate_shape("serverMessage", message)
+            await asyncio.wait_for(client.ws.send_json(message), 5)
 
-    def workflow_requires_api_prompt_client(self, feature_id: Any) -> bool:
+    def committed(self, session, event):
+        self.notifications.post("committed", {"scope": session["scope"], "event": event})
+
+    def mode_changed(self, state):
+        self.notifications.post("mode", state)
+
+    def run_changed(self, run):
+        self.notifications.post("run", run)
+
+    def pipeline_changed(self, event):
+        self.notifications.post("pipeline", event)
+
+    def preview_ready(self, run):
+        self.notifications.post("preview", {"scope": run["scope"], "runId": run["runId"],
+            "parameterRevision": run["parameterRevision"],
+            "nodes": [{"nodeId": b["nodeId"], "slot": b["slot"]} for b in run["manifest"]["images"]]})
+
+    async def flush_notifications(self):
+        self.loop = asyncio.get_running_loop()
+        await self.notifications.flush()
+        await asyncio.sleep(0)
+
+    async def _consume_notification(self, kind, payload):
+        handler = {"committed": self._committed, "mode": self._mode_changed,
+                   "run": self._run_changed, "pipeline": self._pipeline_changed, "preview": self._preview_ready}[kind]
+        await handler(payload)
+
+    async def _view(self, scope, run_id=None, **kwargs):
+        return await self.service.work.finish(notification_view, self.service, scope, run_id, **kwargs)
+
+    async def _recover_notifications(self):
+        await self._mode_changed(await self.service.work.finish(self.service.test_mode.snapshot))
+        for scope in await self.service.work.finish(active_scopes, self.service):
+            view = await self._view(scope, parameters=True)
+            session = view["session"]
+            if not session:
+                continue
+            for token, attachment in session["attachments"].items():
+                client = self.clients.get(attachment["clientId"])
+                if client:
+                    await self.send(client, "state.snapshot", view["parameters"], session=session, token=token)
+            latest = view["latest"]
+            if latest:
+                run = await self.service.work.finish(lambda: self.service.runs.public(self.service.runs.get(latest["runId"])))
+                await self._run_changed(run)
+                await self._preview_ready({"scope": scope, "runId": run["runId"], "parameterRevision": run["parameterRevision"],
+                    "nodes": [{"nodeId": b["nodeId"], "slot": b["slot"]} for b in run["manifest"]["images"]]})
+
+    async def _committed(self, payload):
+        view = await self._view(payload["scope"])
+        session, event = view["session"], payload["event"]
+        if not session:
+            return
+        for token, attach in list(session["attachments"].items()):
+            client = self.clients.get(attach["clientId"])
+            if client:
+                await self.send(client, "parameter.committed", event["payload"],
+                                reply_to=event.get("replyTo"), session=session, token=token)
+
+    async def _mode_changed(self, state):
+        if state["modeRevision"] < self.last_mode_revision:
+            return
+        self.last_mode_revision = state["modeRevision"]
+        target = state["target"]
+        for entry in self.pending_captures.values():
+            if (state["modeRevision"] >= entry["modeRevision"] and
+                    (state["status"] != "ready" or not target or entry["scope"] != target["scope"]) and not entry["future"].done()):
+                entry["future"].set_exception(BridgeError("DRAFT_CHANGED", "Test target changed during capture"))
+        for client_id in list(self.mode_subscribers):
+            client = self.clients.get(client_id)
+            if client:
+                await self.send(client, "test.mode.state", state)
+
+    async def monitor_presence(self):
         try:
-            return storage.is_api_prompt_workflow(storage.workflow_for_feature(feature_id))
-        except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError):
-            return False
+            while self.clients:
+                await asyncio.sleep(2)
+                await self.service.work.finish(self.service.test_mode.expire)
+        except asyncio.CancelledError:
+            pass
 
-    def primary_comfy_client_for_feature(self, feature_id: Any) -> str | None:
-        if self.workflow_requires_api_prompt_client(feature_id):
-            return self.primary_role_client("comfy", "api_prompt_workflows")
-        return self.primary_role_client("comfy")
-
-    def primary_current_graph_client(self) -> str | None:
-        return self.primary_role_client("comfy", "current_graph_workflows")
-
-    def _current_graph_test_client_score(self, client_id: str) -> tuple[int, int, int, float]:
-        capabilities = self.clients[client_id].capabilities
-        focused = 1 if bool(capabilities.get("window_focused")) else 0
-        visible = 1 if bool(capabilities.get("page_visible", True)) else 0
-        active = 1 if focused and visible else 0
-        try:
-            last_active_at = float(capabilities.get("last_active_at") or 0)
-        except (TypeError, ValueError):
-            last_active_at = 0.0
-        return (active, focused, visible, last_active_at)
-
-    def primary_current_graph_test_client(self) -> str | None:
-        clients = [
-            client_id
-            for client_id in self.role_clients("comfy", "current_graph_workflows")
-            if bool(self.clients[client_id].capabilities.get("current_graph_test_mode"))
-        ]
-        if not clients:
-            return None
-        return max(clients, key=self._current_graph_test_client_score)
-
-    def update_comfy_client_capabilities(self, client: BridgeClient, payload: dict[str, Any]) -> None:
-        for key in (
-            "graph_id",
-            "current_graph_test_mode",
-            "page_visible",
-            "window_focused",
-            "last_active_at",
-        ):
-            if key in payload:
-                client.capabilities[key] = payload[key]
-
-    def snapshot(self) -> dict[str, Any]:
-        state = storage.load_state()
-        return {
-            "protocol_version": BRIDGE_PROTOCOL_VERSION,
-            "node_version": __version__,
-            "max_images": BRIDGE_MAX_IMAGES,
-            "max_message_bytes": BRIDGE_MAX_MESSAGE_BYTES,
-            "supported_encodings": list(BRIDGE_SUPPORTED_ENCODINGS),
-            "network": {
-                "default_scope": "loopback",
-                "lan_enabled": lan_access_enabled(),
-                "lan_ready": lan_access_ready(),
-                "lan_auth": "shared_token",
-            },
-            "clients": {
-                "ps": len(self.role_clients("ps")),
-                "comfy": len(self.role_clients("comfy")),
-                "comfy_api_prompt": len(self.role_clients("comfy", "api_prompt_workflows")),
-            },
-            "request_id": state.get("request_id"),
-            "feature_id": state.get("feature_id"),
-            "image_count": state.get("image_count", 0),
-            "multi_image": bool(state.get("multi_image")),
-            "msgpack_available": msgpack is not None,
-        }
-
-    def _state_message(self, state: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "request_id": state["request_id"],
-            "feature_id": state["feature_id"],
-            "execution_mode": state.get("execution_mode", storage.EXECUTION_MODE_AUTO),
-            "slots": state["slots"],
-            "images": state["images"],
-            "image_count": state.get("image_count", 0),
-            "multi_image": state.get("multi_image", False),
-            "canvas": state.get("canvas"),
-            "selection": state["selection"],
-            "selections": state.get("selections", {}),
-            "adv_request": state.get("adv_request"),
-            "updated_at": state.get("updated_at"),
-        }
-
-    async def _send_error(self, client: BridgeClient, payload: dict[str, Any], message: str) -> None:
-        await self.send_to(client.client_id, "error", {
-            "request_id": str(payload.get("request_id") or ""),
-            "feature_id": str(payload.get("feature_id") or payload.get("featureId") or ""),
-            "message": message,
-        })
-
-    async def _queue_backend_workflow(self, client: BridgeClient, state: dict[str, Any]) -> None:
-        try:
-            result = await backend_runner.queue_api_workflow_for_state(
-                feature_id=state["feature_id"],
-                state=state,
-                base_url=client.base_url,
-            )
-        except (FileNotFoundError, ValueError, backend_runner.BackendRunnerError, OSError, json.JSONDecodeError) as exc:
-            await self.send_to(client.client_id, "error", {
-                "request_id": state.get("request_id", ""),
-                "feature_id": state.get("feature_id", ""),
-                "execution_mode": storage.EXECUTION_MODE_API_WORKFLOW,
-                "message": str(exc),
-            })
+    async def _run_changed(self, run):
+        fingerprint = digest(run)
+        if self.last_run_event.get(run["runId"]) == fingerprint:
             return
-        await self.send_to(client.client_id, "run_status", result)
+        self.last_run_event[run["runId"]] = fingerprint
+        if len(self.last_run_event) > 512:
+            self.last_run_event.pop(next(iter(self.last_run_event)))
+        client = self.clients.get(run["controllerClientId"])
+        if client:
+            await self.send(client, "run.status", run)
+        # API submissions have no browser ComfyUI client_id. Deliver completed
+        # previews through the existing attachment, never a global executed event.
+        if run["scope"]["domain"] != "test" or run["status"] != "succeeded":
+            return
+        view = await self._view(run["scope"], run["runId"])
+        if view["observed"]:
+            return
+        mode = view["mode"]
+        if not mode["enabled"] or not mode["target"] or mode["target"]["scope"] != run["scope"]:
+            return
+        session = view["session"]
+        if session and session["manifest"]["definitionSha256"] == run["definitionSha256"]:
+            for token, attachment in list(session["attachments"].items()):
+                editor = self.clients.get(attachment["clientId"])
+                if editor and attachment["role"] == "editor" and editor.client_id == run["scope"]["ownerClientId"]:
+                    await self.send(editor, "run.status", run, session=session, token=token)
 
-    def _json_safe(self, value: Any) -> Any:
-        if isinstance(value, bytes):
-            return base64.b64encode(value).decode("ascii")
-        if isinstance(value, bytearray):
-            return base64.b64encode(bytes(value)).decode("ascii")
-        if isinstance(value, memoryview):
-            return base64.b64encode(value.tobytes()).decode("ascii")
-        if isinstance(value, dict):
-            return {str(key): self._json_safe(item) for key, item in value.items()}
-        if isinstance(value, list):
-            return [self._json_safe(item) for item in value]
-        if isinstance(value, tuple):
-            return [self._json_safe(item) for item in value]
-        return value
+    async def send_editor_pipeline(self, client, event, session, token):
+        """Do not extend or reformat the frozen contract-3 serverMessage schema."""
+        if client.ws.closed or not await self.service.work.finish(editor_current, self.service,
+                client.client_id, session, token, event["runId"]):
+            return
+        latest = self.editor_pipeline_latest.get(digest(event["scope"]))
+        if latest and (event["runOrder"] < latest["runOrder"] or event["runId"] != latest["runId"]):
+            return
+        if event["kind"] == "snapshot":
+            event = {**event, "editorExecution": self.service.execution.snapshot(event["runId"])}
+        message = self.envelope("editor.pipeline", event, session=session, token=token)
+        raw = json.dumps(message, ensure_ascii=False, separators=(",", ":"))
+        require(len(raw.encode("utf-8")) <= BRIDGE_MAX_MESSAGE_BYTES,
+                "MESSAGE_TOO_LARGE", "Editor pipeline message exceeds size limit", status=413)
+        await asyncio.wait_for(client.ws.send_json(message, dumps=lambda _: raw), 5)
+        if event["kind"] in {"node.output", "snapshot"}:
+            trace("editor.output.sent", runId=event["runId"], promptId=event.get("promptId"), sequence=event["sequence"])
 
-    async def add_client(self, client: BridgeClient) -> None:
-        self.clients[client.client_id] = client
-        await self.send_to(client.client_id, "hello", self.snapshot())
-        peer_role = "comfy" if client.role == "ps" else "ps"
-        await self.broadcast(peer_role, "peer_connected", {"role": client.role, "client_id": client.client_id})
-
-    async def remove_client(self, client_id: str) -> None:
-        client = self.clients.pop(client_id, None)
-        if client is not None:
-            peer_role = "comfy" if client.role == "ps" else "ps"
-            await self.broadcast(peer_role, "peer_disconnected", {"role": client.role, "client_id": client_id})
-
-    def decode_message(self, role: str, data: str | bytes) -> dict[str, Any]:
-        if isinstance(data, bytes):
-            if msgpack is None:
-                raise RuntimeError("msgpack is required for binary Photoshop messages")
-            unpacked = msgpack.unpackb(data, raw=False)
-            if not isinstance(unpacked, dict):
-                raise ValueError("Message must decode to an object")
-            return unpacked
-        parsed = json.loads(data)
-        if not isinstance(parsed, dict):
-            raise ValueError("Message must be a JSON object")
-        return parsed
-
-    async def handle_message(self, client_id: str, data: str | bytes) -> None:
-        client = self.clients[client_id]
-        message = self.decode_message(client.role, data)
-        msg_type = message.get("type")
-        if not msg_type and len(message) == 1:
-            msg_type = next(iter(message))
-            message = {"type": msg_type, "data": message[msg_type]}
-
-        if client.role == "ps":
-            await self.handle_ps_message(client, msg_type, message)
-        else:
-            await self.handle_comfy_message(client, msg_type, message)
-
-    async def handle_ps_message(self, client: BridgeClient, msg_type: str, message: dict[str, Any]) -> None:
-        payload = message.get("data") if isinstance(message.get("data"), dict) else message
-        if msg_type == "run_workflow":
-            raw_feature_id = payload.get("feature_id") or payload.get("featureId") or "roundtrip"
-            try:
-                feature_id = storage.validate_workflow_id(raw_feature_id)
-                execution_mode = storage.execution_mode_for_payload(payload, feature_id)
-            except (ValueError, OSError, json.JSONDecodeError) as exc:
-                await self._send_error(client, payload, str(exc))
+    async def _pipeline_changed(self, event):
+        view = await self._view(event["scope"], event["runId"])
+        if not view["observed"] or not view["latest"] or view["latest"]["runId"] != event["runId"]:
+            return
+        scope = event["scope"]
+        scope_key = digest(scope)
+        latest = self.editor_pipeline_latest.get(scope_key)
+        if latest and event["runOrder"] < latest["runOrder"]:
+            return
+        preview = self.previews.get(scope_key)
+        if latest and preview and preview["runId"] != event["runId"] and event["runOrder"] <= latest["runOrder"]:
+            return
+        # Retain identities only; full UI outputs remain in bounded pipeline storage.
+        self.editor_pipeline_latest[scope_key] = {"runId": event["runId"], "runOrder": event["runOrder"]}
+        if len(self.editor_pipeline_latest) > 128:
+            self.editor_pipeline_latest.pop(next(iter(self.editor_pipeline_latest)))
+        session = view["session"]
+        if not session:
+            return
+        if scope["domain"] == "test":
+            mode = view["mode"]
+            if not mode["enabled"] or not mode["target"] or mode["target"]["scope"] != scope:
                 return
+        for token, attachment in list(session["attachments"].items()):
+            editor = self.clients.get(attachment["clientId"])
+            if editor and attachment["role"] == "editor" and (scope["domain"] != "test" or editor.client_id == scope["ownerClientId"]):
+                self.queue_editor_pipeline(editor, event, session, token)
 
-            comfy_test_client_id = self.primary_current_graph_test_client()
-            if comfy_test_client_id is not None:
-                try:
-                    state = storage.ingest_run_payload(payload, require_workflow=False)
-                except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError) as exc:
-                    await self._send_error(client, payload, str(exc))
-                    return
-                state["execution_mode"] = storage.EXECUTION_MODE_CURRENT_GRAPH
-                await self.send_to(comfy_test_client_id, "run_workflow", self._state_message(state))
-                await self.send_to(client.client_id, "run_status", {
-                    "request_id": state["request_id"],
-                    "feature_id": state["feature_id"],
-                    "execution_mode": state["execution_mode"],
-                    "status": "queued_in_comfy",
-                })
-                return
-
-            if execution_mode == storage.EXECUTION_MODE_CURRENT_GRAPH:
-                comfy_client_id = self.primary_current_graph_client()
-                if comfy_client_id is None:
-                    await self._send_error(client, payload, "No ComfyUI frontend is connected with current graph workflow support.")
-                    return
-                try:
-                    state = storage.ingest_run_payload(payload, require_workflow=False)
-                except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError) as exc:
-                    await self._send_error(client, payload, str(exc))
-                    return
-                await self.send_to(comfy_client_id, "run_workflow", self._state_message(state))
-                await self.send_to(client.client_id, "run_status", {
-                    "request_id": state["request_id"],
-                    "feature_id": state["feature_id"],
-                    "execution_mode": execution_mode,
-                    "status": "queued_in_comfy",
-                })
-                return
-
-            if execution_mode == storage.EXECUTION_MODE_API_WORKFLOW:
-                try:
-                    state = storage.ingest_run_payload(payload)
-                except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError) as exc:
-                    await self._send_error(client, payload, str(exc))
-                    return
-                await self._queue_backend_workflow(client, state)
-                return
-
-            comfy_client_id = self.primary_role_client("comfy")
-            if comfy_client_id is None:
-                try:
-                    state = storage.ingest_run_payload(payload)
-                except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError) as exc:
-                    await self._send_error(client, payload, str(exc))
-                    return
-                await self._queue_backend_workflow(client, state)
-                return
-
-            try:
-                state = storage.ingest_run_payload(payload, require_workflow=False)
-            except (FileNotFoundError, ValueError, OSError, json.JSONDecodeError) as exc:
-                await self._send_error(client, payload, str(exc))
-                return
-            await self.send_to(comfy_client_id, "run_workflow", self._state_message(state))
-            await self.send_to(client.client_id, "run_status", {
-                "request_id": state["request_id"],
-                "feature_id": state["feature_id"],
-                "execution_mode": execution_mode,
-                "status": "queued_in_comfy",
-            })
+    def queue_editor_pipeline(self, client, event, session, token):
+        if not self.loop or self.loop.is_closed():
             return
-
-        if msg_type == "slots_update":
-            state = storage.load_state()
-            slots = storage.normalize_slots_for_payload(payload, {})
-            state["slots"] = storage.merge_slots(state.get("slots"), slots)
-            storage.save_state(state)
-            comfy_client_id = self.primary_role_client("comfy")
-            if comfy_client_id is not None:
-                await self.send_to(comfy_client_id, "slots_update", {"slots": slots, "payload": payload})
-            return
-
-        if msg_type == "ping":
-            await self.send_to(client.client_id, "pong", self.snapshot())
-            return
-
-        await self.broadcast("comfy", msg_type or "message", message)
-
-    async def handle_comfy_message(self, client: BridgeClient, msg_type: str, message: dict[str, Any]) -> None:
-        if msg_type == "client_capabilities":
-            capabilities = message.get("data") if isinstance(message.get("data"), dict) else message
-            client.capabilities = {str(key): value for key, value in capabilities.items()}
-            return
-        if msg_type == "slots_snapshot":
-            snapshot = message.get("data") if isinstance(message.get("data"), dict) else message
-            if isinstance(snapshot, dict):
-                self.update_comfy_client_capabilities(client, snapshot)
-            await self.broadcast("ps", "slots_snapshot", snapshot)
-            return
-        if msg_type in {"run_status", "progress", "render_result", "error"}:
-            await self.broadcast("ps", msg_type, message.get("data") or message)
-            return
-        if msg_type == "ping":
-            await self.send_to(client.client_id, "pong", self.snapshot())
-            return
-        await self.broadcast("ps", msg_type or "message", message)
-
-    async def broadcast(self, role: str, msg_type: str, payload: Any) -> None:
-        for client_id in self.role_clients(role):
-            await self.send_to(client_id, msg_type, payload)
-
-    async def send_to(self, client_id: str, msg_type: str, payload: Any) -> None:
-        client = self.clients.get(client_id)
-        if client is None or client.ws.closed:
-            return
-        if client.role == "ps" and msg_type == "render_result":
-            payload = strip_inline_images_for_file_ref(payload)
-        if client.role == "ps":
-            if client.encoding == "msgpack" and msgpack is not None:
-                await client.ws.send_bytes(msgpack.packb({"type": msg_type, "data": payload}, use_bin_type=True))
+        if event["kind"] in {"node.output", "snapshot"}:
+            trace("editor.output.queued", runId=event["runId"], promptId=event.get("promptId"), sequence=event["sequence"])
+        size = len(json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        with self.editor_delivery_lock:
+            delivery = self.editor_delivery.setdefault(client.client_id,
+                {"pending": deque(), "bytes": 0, "scheduled": False, "task": None})
+            if len(delivery["pending"]) >= 64 or delivery["bytes"] + size > 4 * 1024 * 1024:
+                delivery["pending"].clear()
+                delivery["bytes"] = 0
+                # The snapshot is read when the drain reaches it, so all omitted
+                # UI outputs (including cache hits) are represented durably.
+                item = (None, session, token, 0)
             else:
-                await client.ws.send_str(json.dumps(self._json_safe({"type": msg_type, "data": payload}), default=str))
-        else:
-            await client.ws.send_str(json.dumps({"type": msg_type, "data": payload}, default=str))
+                item = (copy.deepcopy(event), session, token, size)
+            delivery["pending"].append(item)
+            delivery["bytes"] += item[3]
+            if delivery["scheduled"]:
+                return
+            delivery["scheduled"] = True
+        def start():
+            if self.editor_delivery.get(client.client_id) is delivery:
+                delivery["task"] = asyncio.create_task(self.drain_editor_pipeline(client, delivery))
+        self.loop.call_soon_threadsafe(start)
 
-    def send_render_result_from_thread(self, payload: dict[str, Any]) -> None:
-        try:
-            from server import PromptServer
+    async def drain_editor_pipeline(self, client, delivery):
+        while True:
+            with self.editor_delivery_lock:
+                if self.editor_delivery.get(client.client_id) is not delivery or not delivery["pending"]:
+                    delivery["scheduled"] = False
+                    delivery["task"] = None
+                    return
+                event, session, token, size = delivery["pending"].popleft()
+                delivery["bytes"] -= size
+            try:
+                if event is None:
+                    await self.restore_editor_pipeline(client, session, token)
+                else:
+                    await self.send_editor_pipeline(client, event, session, token)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Editor pipeline delivery failed")
 
-            loop = PromptServer.instance.loop
-        except Exception as exc:
-            logger.warning("Unable to access PromptServer loop for PS render result: %s", exc)
+    async def restore_editor_pipeline(self, client, session, token):
+        pipeline = getattr(self.service, "pipeline", None)
+        current = await self.service.work.finish(pipeline.latest, session["scope"]) if pipeline else None
+        if not pipeline:
             return
-        asyncio.run_coroutine_threadsafe(self.broadcast("ps", "render_result", payload), loop)
+        if current is None:
+            return
+        if not await self.service.work.finish(pipeline.has_observer, current["runId"]):
+            return
+        event = await self.service.work.finish(pipeline.snapshot, current["runId"], session["controller"], session["scope"])
+        if token in session["attachments"]:
+            self.editor_pipeline_latest[digest(session["scope"])] = {"runId": event["runId"], "runOrder": event["runOrder"]}
+            await self.send_editor_pipeline(client, event, session, token)
 
+    async def _preview_ready(self, payload):
+        """Send resource identity only to editors attached to this exact scope."""
+        view = await self._view(payload["scope"])
+        if not view["latest"] or view["latest"]["runId"] != payload["runId"]:
+            return
+        self.previews[digest(payload["scope"])] = payload
+        if len(self.previews) > 128:
+            self.previews.pop(next(iter(self.previews)))
+        session = view["session"]
+        if session:
+            for token, attachment in list(session["attachments"].items()):
+                client = self.clients.get(attachment["clientId"])
+                if client and attachment["role"] == "editor":
+                    await self.send_preview(client, payload, session, token)
 
-manager = BridgeManager()
+    async def send_preview(self, client, payload, session, token):
+        # Preparation and image loading can finish out of order. Check the latest
+        # prepared identity at send time as well as on the authenticated HTTP read.
+        if (not await self.service.work.finish(editor_current, self.service, client.client_id, session, token, payload["runId"]) or
+                self.previews.get(digest(payload["scope"]), {}).get("runId") != payload["runId"]):
+            return
+        await self.restore_editor_pipeline(client, session, token)
+        if self.previews.get(digest(payload["scope"]), {}).get("runId") == payload["runId"]:
+            await self.send(client, "media.preview", payload, session=session, token=token)
+
+    async def add(self, client):
+        self.loop = asyncio.get_running_loop()
+        self.service.execution.bind_transport(self.send_editor_execution)
+        self.notifications.bind()
+        existing = self.clients.get(client.client_id)
+        require(existing is None, "CONTROLLER_IN_USE", "This client already has a live control connection")
+        self.clients[client.client_id] = client
+        if self.presence_task is None or self.presence_task.done():
+            self.presence_task = asyncio.create_task(self.monitor_presence())
+
+    async def remove(self, client):
+        if self.clients.get(client.client_id) is client:
+            self.clients.pop(client.client_id)
+            client.retired = True
+            with self.editor_delivery_lock:
+                delivery = self.editor_delivery.pop(client.client_id, None)
+            if delivery and delivery["task"]:
+                delivery["task"].cancel()
+            self.mode_subscribers.discard(client.client_id)
+            async with client.control_gate:
+                await self.service.work.finish(disconnected, self.service, client.client_id)
+            if not self.clients and self.presence_task:
+                self.presence_task.cancel()
+            for entry in self.pending_captures.values():
+                if entry["owner"] == client.client_id and not entry["future"].done():
+                    entry["future"].set_exception(BridgeError("TEST_TARGET_UNAVAILABLE", "Test editor disconnected"))
+
+    async def close(self):
+        await self.service.execution.close()
+        if self.presence_task:
+            self.presence_task.cancel()
+            await asyncio.gather(self.presence_task, return_exceptions=True)
+        tasks = tuple(d["task"] for d in self.editor_delivery.values() if d["task"])
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        await self.notifications.close()
+
+    async def send_editor_execution(self, payload):
+        """Live delivery never waits for journal workers or the output queue."""
+        # Never block the asyncio thread on a transaction holding the session
+        # lock while it persists a business change. Recheck the attachment before
+        # every send; a cached lease alone is not authorization after test OFF.
+        while not self.service.sessions.lock.acquire(blocking=False):
+            await asyncio.sleep(.005)
+        try:
+            session = self.service.sessions.by_scope.get(digest(payload["scope"]))
+            with self.service.execution.lock:
+                state = self.service.execution.runs.get(payload["runId"])
+                if not session or not state or state["controller"] != session["controller"] or session["manifest"]["definitionSha256"] != payload["definitionSha256"]:
+                    return
+            deliveries = []
+            for token, attachment in session["attachments"].items():
+                client = self.clients.get(attachment["clientId"])
+                if not client or client.retired or client.ws.closed or client.role != "editor" or attachment["role"] != "editor":
+                    continue
+                if payload["scope"]["domain"] == "test" and client.client_id != payload["scope"]["ownerClientId"]:
+                    continue
+                message = self.envelope("editor.execution", payload, session=session, token=token)
+                self.service.sessions.authorize(client.client_id, message)
+                deliveries.append((client, message))
+        finally:
+            self.service.sessions.lock.release()
+        for client, message in deliveries:
+            require(len(json.dumps(message, ensure_ascii=False).encode("utf-8")) <= BRIDGE_MAX_MESSAGE_BYTES,
+                    "MESSAGE_TOO_LARGE", "Execution feedback exceeds control budget")
+            await asyncio.wait_for(client.ws.send_json(message), 5)
+
+    async def handle(self, client, raw):
+        envelope = loads(raw)
+        require(isinstance(envelope, dict) and envelope.get("protocolVersion") == 2 and envelope.get("contractVersion") == 3,
+                "CONTRACT_UNSUPPORTED", "Expected protocol 2 / contract 3")
+        require(envelope.get("sourceClientId") == client.client_id and self.clients.get(client.client_id) is client,
+                "FORBIDDEN", "Transport client identity mismatch", status=403)
+        validate_shape("clientMessage", envelope)
+        require(isinstance(envelope.get("messageId"), str) and envelope["messageId"] and isinstance(envelope.get("payload"), dict),
+                "MESSAGE_INVALID", "Envelope requires messageId and payload")
+        kind, payload = envelope.get("type"), envelope["payload"]
+        self.loop = asyncio.get_running_loop()
+        self.notifications.bind()
+        entry = None
+        if kind == "test.mode.subscribe":
+            require(client.role in {"editor", "controller"}, "FORBIDDEN", "Test discovery requires an editor or controller", status=403)
+            self.mode_subscribers.add(client.client_id)
+        elif kind == "test.snapshot":
+            entry = self.pending_captures.get(payload.get("captureRequestId"))
+            require(entry is not None and entry["owner"] == client.client_id, "DRAFT_CHANGED", "Unknown capture reply")
+        try:
+            async with client.control_gate:
+                require(not client.retired, "SESSION_EXPIRED", "Transport was closed")
+                operation = asyncio.create_task(self.service.work.run(control_transaction, self.service,
+                    client.client_id, client.role, envelope))
+                try:
+                    response_kind, result, session = await asyncio.shield(operation)
+                except asyncio.CancelledError:
+                    await operation
+                    raise
+        except BridgeError as exc:
+            if entry and not entry["future"].done():
+                entry["future"].set_exception(exc)
+            raise
+        if entry and not entry["future"].done():
+            entry["future"].set_result(result)
+        if kind == "test.capture":
+            owner = self.clients.get(session["scope"]["ownerClientId"])
+            require(owner is not None, "TEST_TARGET_UNAVAILABLE", "Test editor is offline")
+            request = result
+            capture_id = request["captureRequestId"]
+            future = asyncio.get_running_loop().create_future()
+            self.pending_captures[capture_id] = {"owner": owner.client_id, "scope": session["scope"],
+                                               "modeRevision": session["modeRevision"], "future": future}
+            try:
+                await self.service.work.run(self.service.test_mode.check_scope, client.client_id, client.role, session["scope"])
+                editor_attach = next((t for t, a in session["attachments"].items()
+                                      if a["clientId"] == owner.client_id and a["role"] == "editor"), None)
+                require(editor_attach is not None, "TEST_TARGET_UNAVAILABLE", "Test graph must attach before capture")
+                await self.send(owner, "test.capture", request, session=session, token=editor_attach)
+                result = await asyncio.wait_for(future, timeout=15)
+                response_kind = "test.snapshot"
+            except asyncio.TimeoutError as exc:
+                raise BridgeError("TEST_TARGET_UNAVAILABLE", "Test editor capture timed out") from exc
+            finally:
+                self.pending_captures.pop(capture_id, None)
+                if not future.done():
+                    future.cancel()
+                elif not future.cancelled():
+                    future.exception()
+        await self.send(client, response_kind, result, reply_to=envelope["messageId"], session=session,
+                        token=envelope.get("attachToken") if session else None)
+        if kind == "session.attach" and client.role == "editor":
+            snapshot = result["snapshot"]
+            preview = self.previews.get(digest(snapshot["scope"]))
+            attached_session = (await self._view(snapshot["scope"]))["session"]
+            if not attached_session:
+                return
+            if preview:
+                await self.send_preview(client, preview, attached_session, result["attachToken"])
+            else:
+                await self.restore_editor_pipeline(client, attached_session, result["attachToken"])

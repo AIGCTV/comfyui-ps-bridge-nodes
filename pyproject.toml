@@ -1,6 +1,6 @@
 [project]
 name = "aigctv-ps-bridge-nodes"
-version = "0.2.1"
+version = "0.3.1"
 description = "ComfyUI V3 custom nodes for exchanging images and workflow parameters with Photoshop."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -8,7 +8,7 @@ license = { file = "LICENSE" }
 authors = [
   { name = "AIGCTV" }
 ]
-dependencies = ["msgpack>=1.0.8"]
+dependencies = ["rfc8785==0.1.4", "jsonschema>=4.20,<5"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "License :: OSI Approved :: MIT License",
@@ -27,4 +27,4 @@ Issues = "https://github.com/AIGCTV/comfyui-ps-bridge-nodes/issues"
 [tool.comfy]
 PublisherId = "aigctv"
 DisplayName = "ComfyUI PS Bridge Nodes"
-Icon = ""
+Icon = "https://raw.githubusercontent.com/AIGCTV/comfyui-ps-bridge-nodes/main/js/assets/icon.png"

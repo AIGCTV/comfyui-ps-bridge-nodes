@@ -1,38 +1,115 @@
 {
   "1": {
     "inputs": {
-      "prompt": "",
-      "resolution": "1k",
-      "strength": 0.65,
-      "batch_count": 1,
-      "seed": 42,
-      "params_json": "{}",
-      "image_1_file": "",
-      "image_2_file": "",
-      "image_3_file": "",
-      "image_4_file": "",
-      "image_5_file": "",
-      "image_6_file": "",
-      "mask_image_file": "",
-      "image_count": 1
+      "slot": "main",
+      "required": true,
+      "file_name": "",
+      "selection_file": "",
+      "request_id": ""
     },
-    "class_type": "Adv_Request",
+    "class_type": "VP_Image",
     "_meta": {
-      "title": "PS Bridge Send To ComfyUI"
+      "title": "PS Images"
     }
   },
   "2": {
     "inputs": {
-      "filename_prefix": "PSBridge",
-      "request_id": "",
+      "value": 1,
+      "min": 0,
+      "max": 1,
+      "step": 0.01,
+      "param_id": "strength",
+      "label": "Strength",
+      "source_json": "{\"kind\":\"canonical\",\"key\":\"strength\"}"
+    },
+    "class_type": "VP_Slider",
+    "_meta": {
+      "title": "PS Slider"
+    }
+  },
+  "3": {
+    "inputs": {
+      "value": 2
+    },
+    "class_type": "VP_Batch",
+    "_meta": {
+      "title": "PS Batch"
+    }
+  },
+  "4": {
+    "inputs": {
+      "upscale_method": "nearest-exact",
+      "scale_by": [
+        "2",
+        0
+      ],
       "image": [
         "1",
         0
       ]
     },
-    "class_type": "Adv_SendToPS",
+    "class_type": "ImageScaleBy",
     "_meta": {
-      "title": "PS Bridge Send To Photoshop"
+      "title": "缩放图像（比例）"
+    }
+  },
+  "5": {
+    "inputs": {
+      "amount": [
+        "3",
+        0
+      ],
+      "image": [
+        "4",
+        0
+      ]
+    },
+    "class_type": "RepeatImageBatch",
+    "_meta": {
+      "title": "复制图像批次"
+    }
+  },
+  "6": {
+    "inputs": {
+      "result_id": "result",
+      "filename_prefix": "VPlugins",
+      "request_id": "",
+      "images": [
+        "5",
+        0
+      ],
+      "alpha": [
+        "1",
+        1
+      ]
+    },
+    "class_type": "VP_SendToPS",
+    "_meta": {
+      "title": "Send to PS"
+    }
+  },
+  "7": {
+    "inputs": {
+      "mask": [
+        "6",
+        1
+      ]
+    },
+    "class_type": "MaskToImage",
+    "_meta": {
+      "title": "遮罩转换为图像"
+    }
+  },
+  "8": {
+    "inputs": {
+      "images": [
+        "7",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "预览图像"
     }
   }
 }

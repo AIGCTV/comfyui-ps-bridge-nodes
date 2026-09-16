@@ -1,0 +1,167 @@
+{
+  "VP_Image": {
+    "display_name": "PS 图像",
+    "inputs": {
+      "slot": {
+        "name": "图像名称",
+        "options": {
+          "main": "主图",
+          "ref1": "图像 2",
+          "ref2": "图像 3",
+          "ref3": "图像 4",
+          "ref4": "图像 5",
+          "ref5": "图像 6"
+        }
+      },
+      "required": {
+        "name": "必需"
+      },
+      "file_name": {
+        "name": "图像文件"
+      },
+      "selection_file": {
+        "name": "选区文件"
+      },
+      "request_id": {
+        "name": "请求 ID"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "RGB"
+      },
+      "1": {
+        "name": "ALPHA"
+      },
+      "2": {
+        "name": "MASK"
+      },
+      "3": {
+        "name": "宽度"
+      },
+      "4": {
+        "name": "高度"
+      }
+    }
+  },
+  "VP_Prompt": {
+    "display_name": "PS 提示词",
+    "inputs": {
+      "text": {
+        "name": "提示词"
+      },
+      "param_id": {
+        "name": "参数 ID"
+      },
+      "label": {
+        "name": "标签"
+      },
+      "source_json": {
+        "name": "来源 JSON"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "文本"
+      }
+    }
+  },
+  "VP_Slider": {
+    "display_name": "PS 滑块",
+    "inputs": {
+      "value": {
+        "name": "数值"
+      },
+      "min": {
+        "name": "最小值"
+      },
+      "max": {
+        "name": "最大值"
+      },
+      "step": {
+        "name": "步长"
+      },
+      "param_id": {
+        "name": "参数 ID"
+      },
+      "label": {
+        "name": "标签"
+      },
+      "source_json": {
+        "name": "来源 JSON"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "数值"
+      }
+    }
+  },
+  "VP_Batch": {
+    "display_name": "PS 批量",
+    "inputs": {
+      "value": {
+        "name": "数值"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "数量"
+      }
+    }
+  },
+  "VP_Seed": {
+    "display_name": "PS 种子",
+    "inputs": {
+      "param_id": {
+        "name": "参数 ID"
+      },
+      "label": {
+        "name": "标签"
+      },
+      "value": {
+        "name": "种子"
+      },
+      "mode": {
+        "name": "模式",
+        "options": {
+          "fixed": "固定",
+          "random": "随机"
+        }
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "种子"
+      }
+    }
+  },
+  "VP_SendToPS": {
+    "display_name": "发送到 PS",
+    "inputs": {
+      "images": {
+        "name": "RGB"
+      },
+      "alpha": {
+        "name": "ALPHA"
+      },
+      "result_id": {
+        "name": "结果 ID"
+      },
+      "filename_prefix": {
+        "name": "文件名前缀"
+      },
+      "request_id": {
+        "name": "请求 ID"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "RGB"
+      },
+      "1": {
+        "name": "ALPHA"
+      }
+    }
+  }
+}

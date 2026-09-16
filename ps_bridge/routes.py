@@ -1,220 +1,329 @@
+"""Contract-3 REST and WebSocket endpoints with shared authorization."""
 from __future__ import annotations
-
 import asyncio
-import json
 import logging
-import uuid
-
-from aiohttp import WSMsgType, web
-
-from .manager import BridgeClient, manager
-from .paths import PS_IMAGES_DIR, WORKFLOWS_DIR, ensure_data_dirs
-from .protocol import BRIDGE_MAX_MESSAGE_BYTES, BRIDGE_PROTOCOL_VERSION, BRIDGE_SUPPORTED_ENCODINGS
-from .security import (
-    auth_token_matches,
-    bearer_token,
-    bridge_auth_token,
-    is_local_or_private_ip,
-    is_loopback_ip,
-    lan_access_enabled,
-    resolve_inside,
-    validate_workflow_id,
-)
-
+from urllib.parse import urlsplit
+from aiohttp import web, WSMsgType
+from .errors import BridgeError, require
+from .json_codec import loads, canonical_bytes
+from .manager import BridgeManager, BridgeClient
+from .protocol import BRIDGE_MAX_MESSAGE_BYTES, BRIDGE_MAX_ASSET_BYTES, contract_capabilities
+from .security import (is_loopback_ip, is_local_or_private_ip, lan_access_enabled,
+                       bridge_auth_token, bearer_token, auth_token_matches, resolve_inside)
+from .service import get_service
+from .manifest import candidate
+from .schemas import validate_shape
 
 logger = logging.getLogger(__name__)
 _ROUTES_REGISTERED = False
 
+def _remote_ip(request):
+    peer = request.transport.get_extra_info("peername") if request.transport else None
+    return peer[0] if peer else request.remote or ""
 
-def _remote_ip(request: web.Request) -> str:
-    peername = request.transport.get_extra_info("peername") if request.transport else None
-    return peername[0] if peername else request.remote or ""
-
-
-def _base_url(request: web.Request) -> str:
-    scheme = request.scheme or "http"
-    host = request.host or "127.0.0.1:8188"
-    return f"{scheme}://{host}"
-
-
-def _network_access_error(request: web.Request) -> web.Response | None:
+def _network_access_error(request):
     ip = _remote_ip(request)
-    if is_loopback_ip(ip):
-        return None
-    if not is_local_or_private_ip(ip):
-        return web.Response(status=403, text="PS Bridge rejects public-network clients")
-    if not lan_access_enabled():
-        return web.Response(
-            status=403,
-            text="PS Bridge LAN access is disabled; set PS_BRIDGE_ALLOW_LAN=1 to enable it",
-        )
-    if not bridge_auth_token():
-        return web.Response(
-            status=503,
-            text="PS Bridge LAN access requires PS_BRIDGE_AUTH_TOKEN",
-        )
+    if not is_loopback_ip(ip):
+        if not is_local_or_private_ip(ip) or not lan_access_enabled() or not bridge_auth_token():
+            return web.json_response({"ok": False, "error": {"code": "FORBIDDEN", "message": "LAN access requires explicit configuration and authentication", "retryable": False}}, status=403)
+    origin = request.headers.get("Origin")
+    if origin:
+        parsed = urlsplit(origin)
+        if parsed.netloc != request.host or parsed.scheme != request.scheme:
+            return web.json_response({"ok": False, "error": {"code": "FORBIDDEN", "message": "Cross-origin bridge requests are forbidden", "retryable": False}}, status=403)
     return None
 
-
-def _authorize_http(request: web.Request) -> web.Response | None:
+def _authorize_http(request):
     error = _network_access_error(request)
-    if error is not None or is_loopback_ip(_remote_ip(request)):
+    if error is not None:
         return error
-    candidate = bearer_token(request.headers.get("Authorization"))
-    if not auth_token_matches(candidate):
-        return web.Response(
-            status=401,
-            text="PS Bridge LAN authentication failed",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+    # A configured token is enforced on loopback as well as LAN.
+    if bridge_auth_token() and not auth_token_matches(bearer_token(request.headers.get("Authorization"))):
+        return web.json_response({"ok": False, "error": {"code": "UNAUTHENTICATED", "message": "Bridge authentication required", "retryable": False}}, status=401)
     return None
 
+async def read_body(request):
+    data = bytearray()
+    async for chunk in request.content.iter_chunked(65536):
+        data.extend(chunk)
+        require(len(data) <= BRIDGE_MAX_MESSAGE_BYTES, "MESSAGE_TOO_LARGE", "JSON control message exceeds size limit", status=413)
+    return loads(bytes(data))
 
-async def _authenticate_websocket(ws: web.WebSocketResponse) -> bool:
-    try:
-        message = await asyncio.wait_for(ws.receive(), timeout=5)
-    except asyncio.TimeoutError:
-        await ws.close(code=1008, message=b"PS Bridge authentication timed out")
-        return False
+def create_routes(service):
+    routes = web.RouteTableDef()
+    manager = BridgeManager(service)
+    service.manager = manager
+    uploads = 0
+    def identity(request, role=None):
+        client_id = request.headers.get("X-PS-Bridge-Client-Id")
+        actual = manager.identities.authenticate(client_id, request.headers.get("X-PS-Bridge-Client-Token"), role)
+        return client_id, actual
+    def route(method, path, *, auth=True, client=True, role=None, media=False):
+        def decorate(handler):
+            async def wrapped(request):
+                nonlocal uploads
+                uploading = False
+                try:
+                    if auth:
+                        forbidden = _authorize_http(request)
+                        if forbidden is not None:
+                            return forbidden
+                    owner = (await service.work.run(identity, request, role))[0] if client else None
+                    if media:
+                        require(uploads < 2, "BUSY", "Image upload queue is full", retryable=True, status=503)
+                        uploads += 1
+                        uploading = True
+                    result = await handler(request, owner)
+                    if isinstance(result, web.StreamResponse):
+                        return result
+                    return web.json_response({"ok": True, "data": result}, dumps=lambda value: canonical_bytes(value).decode("utf-8"))
+                except BridgeError as exc:
+                    return web.json_response({"ok": False, "error": exc.error}, status=exc.status)
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    return web.json_response({"ok": False, "error": {"code": "MESSAGE_INVALID", "message": "Invalid request structure", "retryable": False}}, status=422)
+                except Exception:
+                    logger.exception("Bridge request failed")
+                    return web.json_response({"ok": False, "error": {"code": "INTERNAL_ERROR", "message": "Bridge operation failed; inspect server logs", "retryable": False}}, status=500)
+                finally:
+                    if uploading:
+                        uploads -= 1
+            routes.route(method, "/ps-bridge/v3" + path)(wrapped)
+            return wrapped
+        return decorate
 
-    candidate = ""
-    if message.type == WSMsgType.TEXT:
-        try:
-            payload = json.loads(message.data)
-        except json.JSONDecodeError:
-            payload = {}
-        if isinstance(payload, dict) and payload.get("type") == "authenticate":
-            data = payload.get("data")
-            if isinstance(data, dict):
-                candidate = str(data.get("token") or "")
+    @route("GET", "/health", client=False)
+    async def health(request, owner):
+        return {**contract_capabilities(), "serverEpoch": service.sessions.epoch}
+
+    @route("POST", "/clients", client=False)
+    async def enroll(request, owner):
+        payload = await read_body(request)
+        validate_shape("enrollment", payload)
+        return await service.work.run(manager.identities.enroll, payload.get("clientId"), payload.get("role"), payload.get("clientToken"))
+
+    @route("POST", "/workflows/inspect")
+    async def inspect_workflow(request, owner):
+        require((await service.work.run(identity, request))[1] in {"editor", "controller"}, "FORBIDDEN", "Only editors or controllers may inspect workflows", status=403)
+        payload = await read_body(request)
+        return await service.work.run(candidate, payload.get("api"), payload.get("metadata"), installed=service.definitions.installed, ui=payload.get("ui"))
+
+    @route("POST", "/workflows/register", role="controller")
+    async def register(request, owner):
+        payload = await read_body(request)
+        return await service.work.run(service.definitions.register, payload.get("manifest"), payload.get("api"), ui=payload.get("ui"))
+
+    @route("GET", "/workflows")
+    async def workflows(request, owner):
+        return await service.work.run(service.definitions.list_current)
+
+    @route("POST", "/assets", role="controller", media=True)
+    async def asset_upload(request, owner):
+        reader = await request.multipart()
+        metadata, data = None, None
+        async for part in reader:
+            require(part.name in ("metadata", "file") and (metadata is None if part.name == "metadata" else data is None),
+                    "ASSET_INVALID", "Expected one metadata part and one PNG file")
+            limit = BRIDGE_MAX_MESSAGE_BYTES if part.name == "metadata" else BRIDGE_MAX_ASSET_BYTES
+            content = bytearray()
+            while chunk := await part.read_chunk(65536):
+                content.extend(chunk)
+                require(len(content) <= limit, "ASSET_INVALID", "Upload exceeds size limit", status=413)
+            if part.name == "metadata":
+                metadata = loads(bytes(content))
             else:
-                candidate = str(payload.get("token") or "")
+                data = bytes(content)
+        require(metadata is not None and data is not None, "ASSET_INVALID", "Incomplete multipart upload")
+        return await service.work.run(service.assets.register, owner, metadata, data)
 
-    if not auth_token_matches(candidate):
-        await ws.close(code=1008, message=b"PS Bridge authentication failed")
-        return False
+    @route("POST", "/assets/register-input", role="controller")
+    async def register_input(request, owner):
+        payload = await read_body(request)
+        return await service.work.run(service.assets.register_input, owner, payload.get("file"), payload.get("metadata"))
 
-    await ws.send_json({
-        "type": "authenticated",
-        "data": {"protocol_version": BRIDGE_PROTOCOL_VERSION},
-    })
-    return True
+    @route("POST", "/runs/prepare", role="controller")
+    async def prepare(request, owner):
+        return await service.work.run(service.preparation.prepare, owner, await read_body(request))
 
+    @route("POST", "/editor/preview", role="editor")
+    async def editor_preview(request, owner):
+        from .json_codec import digest
+        envelope = await read_body(request)
+        validate_shape("editorPreviewRequest", envelope)
+        def resolve_preview():
+            with service.sessions.lock:
+                session, attachment = service.sessions.authorize(owner, envelope)
+                require(attachment["role"] == "editor", "FORBIDDEN", "Preview requires an attached editor", status=403)
+                payload = envelope["payload"]
+                run = service.runs.get(payload["runId"])
+                require(run["scope"] == session["scope"] and run["controllerClientId"] == session["controller"],
+                        "FORBIDDEN", "Preview belongs to a different scope", status=403)
+                current = service.pipeline.latest(session["scope"])
+                require(current is not None and current["runId"] == run["runId"], "DRAFT_CHANGED", "Preview was superseded")
+                binding = next((b for b in run["manifest"]["images"] if b["nodeId"] == payload["nodeId"]), None)
+                require(binding is not None, "BINDING_INVALID", "Unknown preview node")
+                asset = next((a for a in run["media"]["images"] if a["role"] == binding["slot"]), None)
+                require(asset is not None, "MISSING_MEDIA", "Optional image is absent", status=404)
+                return run, asset
+        run, asset = await service.work.run(resolve_preview)
+        png = await service.work.run(service.assets.preview, run["controllerClientId"], asset["assetId"])
+        return web.Response(body=png, content_type="image/png",
+                            headers={"Cache-Control": "private, no-store", "ETag": '"' + asset["sha256"] + '"'})
 
-def _workflow_files() -> list[dict[str, str]]:
-    ensure_data_dirs()
-    files = []
-    for path in sorted(WORKFLOWS_DIR.glob("*.json")):
-        if path.name == "manifest.json":
-            continue
-        files.append({"feature_id": path.stem, "filename": path.name})
-    return files
+    @route("GET", "/runs/{runId}", role="controller")
+    async def status(request, owner):
+        run_id = request.match_info["runId"]
+        await service.work.run(service.runs.get, run_id, owner)
+        if service.runner:
+            await service.work.run(service.runner.reconcile, run_id)
+        return await service.work.run(lambda: service.runs.public(service.runs.get(run_id, owner)))
 
+    @route("POST", "/runs/{runId}/submit", role="controller")
+    async def submit(request, owner):
+        require(service.runner is not None, "NODE_UNAVAILABLE", "ComfyUI runner is unavailable")
+        run = await service.runner.submit(request.match_info["runId"], owner)
+        return submission_result(run)
 
-def register_routes() -> None:
+    def submission_result(run):
+        require(run["status"] != "submission_unknown", "SUBMISSION_UNKNOWN",
+                "Submission is unresolved; query this run, do not resubmit /prompt", snapshot=run)
+        return run
+
+    @route("POST", "/runs/{runId}/claim", role="controller")
+    async def claim(request, owner):
+        return await service.work.run(service.runs.claim, request.match_info["runId"], owner, "rust")
+
+    @route("POST", "/runs/{runId}/submitted", role="controller")
+    async def submitted(request, owner):
+        payload = await read_body(request)
+        validate_shape("submitted", payload)
+        run_id = request.match_info["runId"]
+        run = await service.work.run(service.runs.get, run_id, owner)
+        require(run["submitOwner"] == "rust", "FORBIDDEN", "Only the Rust submit adapter can use this endpoint", status=403)
+        if "promptId" in payload:
+            require(service.runner is not None, "NODE_UNAVAILABLE", "ComfyUI queue observer is unavailable")
+            running, pending = service.runner.adapter.queue()
+            history = await service.work.run(service.runner.history_for, payload["promptId"])
+            candidates = list(running) + list(pending) + [h.get("prompt") for h in history.values()]
+            require(run["promptId"] == payload["promptId"] or any(service.runner._matches(run, item) and str(item[1]) == payload["promptId"] for item in candidates),
+                    "BINDING_INVALID", "The reported prompt does not match the frozen run")
+        return submission_result(await service.work.run(service.runs.submitted, run_id, owner, payload.get("claimToken"), payload.get("promptId")))
+
+    @route("POST", "/runs/{runId}/cancel", role="controller")
+    async def cancel(request, owner):
+        payload = await read_body(request)
+        validate_shape("cancel", payload)
+        require(service.runner is not None, "NODE_UNAVAILABLE", "ComfyUI runner is unavailable")
+        return await service.work.run(service.runner.cancel, request.match_info["runId"], owner, payload.get("cancelMessageId"))
+
+    @route("GET", "/runs/{runId}/results/{resultId}/{batchIndex}", role="controller")
+    async def result_file(request, owner):
+        run = await service.work.run(service.runs.get, request.match_info["runId"], owner)
+        result = next((r for r in run["results"] if r["resultId"] == request.match_info["resultId"]
+                       and r["batchIndex"] == int(request.match_info["batchIndex"])), None)
+        require(result is not None, "RESULT_NOT_FOUND", "Result does not exist", status=404)
+        import folder_paths
+        from pathlib import Path
+        file = result["file"]
+        path = resolve_inside(Path(folder_paths.get_output_directory()), file["filename"])
+        path = await service.work.run(service.result_assets.verify, path, result)
+        return web.FileResponse(path, headers={"Content-Type": "image/png"})
+
+    @routes.get("/ps-bridge/v3/ws")
+    async def websocket(request):
+        forbidden = _network_access_error(request)
+        if forbidden is not None:
+            return forbidden
+        ws = web.WebSocketResponse(max_msg_size=BRIDGE_MAX_MESSAGE_BYTES, heartbeat=30)
+        await ws.prepare(request)
+        client = None
+        tasks = set()
+        async def dispatch(raw):
+            envelope = None
+            try:
+                envelope = loads(raw)
+                await manager.handle(client, raw)
+            except BridgeError as exc:
+                await ws.send_json(manager.envelope("error", {"error": exc.error}, reply_to=envelope.get("messageId") if isinstance(envelope, dict) else None))
+            except Exception:
+                logger.exception("Bridge WebSocket dispatch failed")
+                await ws.send_json(manager.envelope("error", {"error": {"code": "MESSAGE_INVALID", "message": "Invalid control message", "retryable": False}},
+                                                   reply_to=envelope.get("messageId") if isinstance(envelope, dict) else None))
+        try:
+            first = await asyncio.wait_for(ws.receive(), timeout=5)
+            require(first.type == WSMsgType.TEXT, "MESSAGE_INVALID", "First message must be a text hello")
+            hello = loads(first.data)
+            require(isinstance(hello, dict), "MESSAGE_INVALID", "Hello must be an object")
+            require(hello.get("type") == "hello" and hello.get("protocolVersion") == 2 and hello.get("contractVersion") == 3,
+                    "CONTRACT_UNSUPPORTED", "Expected protocol 2 / contract 3 hello")
+            validate_shape("clientMessage", hello)
+            payload = hello.get("payload", {})
+            if bridge_auth_token():
+                require(auth_token_matches(payload.get("authToken")), "UNAUTHENTICATED", "Bridge authentication required", status=401)
+            client_id = hello.get("sourceClientId")
+            role = await service.work.run(manager.identities.authenticate, client_id, payload.get("clientToken"), payload.get("role"))
+            client = BridgeClient(client_id, role, ws)
+            await manager.add(client)
+            await manager.send(client, "welcome", {**contract_capabilities(), "serverEpoch": service.sessions.epoch}, reply_to=hello.get("messageId"))
+            async for message in ws:
+                if message.type == WSMsgType.TEXT:
+                    # Long test capture waits cannot block replies from other clients.
+                    if len(tasks) >= 32:
+                        await ws.close(code=1008, message=b"Too many pending messages")
+                        break
+                    task = asyncio.create_task(dispatch(message.data))
+                    tasks.add(task); task.add_done_callback(tasks.discard)
+                elif message.type == WSMsgType.BINARY:
+                    await ws.close(code=1003, message=b"Use asset upload for media")
+        except (BridgeError, asyncio.TimeoutError) as exc:
+            if isinstance(exc, BridgeError):
+                await ws.send_json(manager.envelope("error", {"error": exc.error}))
+            await ws.close(code=1008)
+        finally:
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            if client:
+                cleanup = asyncio.create_task(manager.remove(client))
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    await cleanup
+                    raise
+        return ws
+
+    # Old clients get a version error, not a silent fallback into the new state.
+    async def legacy(request):
+        forbidden = _authorize_http(request)
+        return forbidden if forbidden is not None else web.json_response(
+            {"ok": False, "error": {"code": "CONTRACT_UNSUPPORTED", "message": "Use /ps-bridge/v3 and VP nodes", "retryable": False}}, status=409)
+    routes.get("/ps-bridge/health")(legacy)
+    routes.get("/ps-bridge/ws")(legacy)
+    from .pipeline_routes import register_pipeline_routes
+    register_pipeline_routes(route, service, read_body)
+    from .editor_pipeline import register_editor_pipeline
+    register_editor_pipeline(route, service, manager, read_body)
+    return routes, manager
+
+def register_routes():
     global _ROUTES_REGISTERED
     if _ROUTES_REGISTERED:
         return
-    try:
-        from server import PromptServer
-
-        routes = PromptServer.instance.routes
-    except Exception as exc:
-        logger.warning("PS Bridge routes were not registered: %s", exc)
-        return
-
-    ensure_data_dirs()
-
-    @routes.get("/ps-bridge/health")
-    async def health(request: web.Request) -> web.Response:
-        forbidden = _authorize_http(request)
-        if forbidden:
-            return forbidden
-        return web.json_response({"ok": True, "bridge": manager.snapshot()})
-
-    @routes.get("/ps-bridge/workflows")
-    async def workflows(request: web.Request) -> web.Response:
-        forbidden = _authorize_http(request)
-        if forbidden:
-            return forbidden
-        manifest_path = WORKFLOWS_DIR / "manifest.json"
-        manifest = {}
-        if manifest_path.exists():
-            try:
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                manifest = {"error": "manifest.json is invalid"}
-        return web.json_response({"workflows": _workflow_files(), "manifest": manifest})
-
-    @routes.get("/ps-bridge/workflows/{feature_id:.+}")
-    async def workflow(request: web.Request) -> web.Response:
-        forbidden = _authorize_http(request)
-        if forbidden:
-            return forbidden
-        try:
-            feature_id = validate_workflow_id(request.match_info["feature_id"])
-            path = resolve_inside(WORKFLOWS_DIR, f"{feature_id}.json")
-        except ValueError as exc:
-            return web.Response(status=400, text=str(exc))
-        if not path.exists():
-            return web.Response(status=404, text="Workflow not found")
-        return web.FileResponse(path)
-
-    @routes.get("/ps-bridge/inputs/{filename:.+}")
-    async def ps_input(request: web.Request) -> web.Response:
-        forbidden = _authorize_http(request)
-        if forbidden:
-            return forbidden
-        try:
-            path = resolve_inside(PS_IMAGES_DIR, request.match_info["filename"])
-        except ValueError as exc:
-            return web.Response(status=400, text=str(exc))
-        if not path.exists():
-            return web.Response(status=404, text="Input image not found")
-        return web.FileResponse(path)
-
-    @routes.get("/ps-bridge/ws")
-    async def websocket(request: web.Request) -> web.WebSocketResponse:
-        forbidden = _network_access_error(request)
-        if forbidden:
-            if forbidden.status == 503:
-                raise web.HTTPServiceUnavailable(text=forbidden.text)
-            raise web.HTTPForbidden(text=forbidden.text)
-
-        role = request.query.get("role", "")
-        if role not in {"ps", "comfy"}:
-            raise web.HTTPBadRequest(text="role must be ps or comfy")
-        encoding = (request.query.get("encoding") or "json").strip().lower()
-        if role == "comfy":
-            encoding = "json"
-        elif encoding not in BRIDGE_SUPPORTED_ENCODINGS:
-            raise web.HTTPBadRequest(text="encoding must be json or msgpack")
-        client_id = request.query.get("client_id") or f"{role}-{uuid.uuid4().hex}"
-        ws = web.WebSocketResponse(max_msg_size=BRIDGE_MAX_MESSAGE_BYTES)
-        await ws.prepare(request)
-        if not is_loopback_ip(_remote_ip(request)) and not await _authenticate_websocket(ws):
-            return ws
-        client = BridgeClient(
-            ws=ws,
-            role=role,
-            client_id=client_id,
-            ip=_remote_ip(request),
-            base_url=_base_url(request),
-            encoding=encoding,
-        )
-        await manager.add_client(client)
-
-        try:
-            async for msg in ws:
-                if msg.type == WSMsgType.TEXT:
-                    await manager.handle_message(client_id, msg.data)
-                elif msg.type == WSMsgType.BINARY:
-                    await manager.handle_message(client_id, msg.data)
-                elif msg.type == WSMsgType.ERROR:
-                    logger.warning("PS Bridge websocket error: %s", ws.exception())
-                    break
-        finally:
-            await manager.remove_client(client_id)
-        return ws
-
+    from server import PromptServer
+    from .native_validation import native_prompt_validation
+    service = get_service()
+    routes, manager = create_routes(service)
+    for entry in routes:
+        PromptServer.instance.routes.route(entry.method, entry.path)(entry.handler)
+    service.manager = manager
+    PromptServer.instance.app.middlewares.append(native_prompt_validation)
+    loop = PromptServer.instance.loop
+    service.runner.monitor = loop.create_task(service.runner.watch())
+    async def shutdown(_app):
+        service.runner.monitor.cancel()
+        await service.pipeline.close()
+        await asyncio.gather(service.runner.monitor, return_exceptions=True)
+        await manager.close()
+        service.work.close()
+    PromptServer.instance.app.on_cleanup.append(shutdown)
     _ROUTES_REGISTERED = True

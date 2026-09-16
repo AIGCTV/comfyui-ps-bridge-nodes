@@ -1,10 +1,17 @@
 {
-  "version": 1,
+  "version": 2,
+  "contractVersion": 3,
   "workflows": [
     {
-      "feature_id": "example-roundtrip",
-      "name": "PS Bridge Roundtrip Example",
-      "description": "Public synthetic API-format example using Adv_Request and Adv_SendToPS."
+      "workflowId": "example-roundtrip",
+      "featureId": "example-roundtrip",
+      "workflowVersion": "2.0.0",
+      "name": "PS Vplugins Roundtrip",
+      "apiFile": "example-roundtrip.json",
+      "manifestFile": "example-roundtrip.manifest.json",
+      "uiFile": "example-roundtrip.ui.json",
+      "status": "development-only",
+      "description": "Six-node format, formally exported from ComfyUI 0.34.0 / frontend 1.49.6. No PS/VPlugins verified publication claim."
     }
   ]
 }

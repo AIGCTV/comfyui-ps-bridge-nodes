@@ -39,8 +39,11 @@ def safe_png_filename(value: str, fallback: str = "item") -> str:
     return f"{safe_component(value, fallback)}.png"
 
 
-def resolve_inside(base: Path, child_name: str) -> Path:
-    if "/" in child_name or "\\" in child_name or child_name in {"", ".", ".."}:
+def resolve_inside(base: Path, child_name: str, *, allow_subdirs: bool = False) -> Path:
+    if not isinstance(child_name, str) or not child_name or "\\" in child_name or ":" in child_name:
+        raise ValueError("Invalid filename")
+    parts = child_name.split("/")
+    if any(part in {"", ".", ".."} for part in parts) or (len(parts) > 1 and not allow_subdirs):
         raise ValueError("Invalid filename")
     target = (base / child_name).resolve()
     base_resolved = base.resolve()
