@@ -1,11 +1,12 @@
 # Public source manifest
 
-Release version: `0.3.1`
+Release version: `0.3.2`
 
-Prepared: `2026-09-16`. Status: local source candidate; not pushed, tagged or published.
+Prepared: `2026-09-18`. Status: local source candidate; not pushed, tagged or published.
 
 This source tree contains only the ComfyUI six-node package. It has no private Git history,
-runtime data, credentials, companion application code, development tests or CI workflows.
+runtime data, credentials, companion application code or development tests. The only CI file is
+the public Registry publishing workflow; its credential is supplied by the public repository secret.
 `docs/contracts/bridge-v3/bridge.schema.json` is required at runtime and must remain installed.
 `ps_bridge/test_mode.py` and `js/test_mode_client.js` are product features, not development tests.
 Two GUI workflow templates and their same-name static JPG covers are included. API exports,
@@ -13,12 +14,14 @@ internal workflow variants, the optional template-cover comparison extension and
 frontend helpers are excluded.
 The synthetic workflow bundle retains its original bytes and has no verified Photoshop support claim.
 The package version is aligned in pyproject.toml, ps_bridge/__init__.py and ps_bridge/protocol.py.
-Source signing is not applied. GitHub pushing and Registry publication are separate operations.
+Source signing is not applied. A push to public `main` that changes `pyproject.toml` triggers the
+Registry publishing workflow; manual dispatch remains available for recovery.
 
 ## Exact allowlist
 
 - `.comfyignore`
 - `.gitattributes`
+- `.github/workflows/publish.yml`
 - `.gitignore`
 - `LICENSE`
 - `README.md`

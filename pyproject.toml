@@ -1,6 +1,6 @@
 [project]
 name = "aigctv-ps-bridge-nodes"
-version = "0.3.1"
+version = "0.3.2"
 description = "ComfyUI V3 custom nodes for exchanging images and workflow parameters with Photoshop."
 readme = "README.md"
 requires-python = ">=3.10"

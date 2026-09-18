@@ -1,11 +1,13 @@
 # Only reviewed public source paths may be staged.
 *
+!/.github/
 !/data/
 !/docs/
 !/example_workflows/
 !/js/
 !/locales/
 !/ps_bridge/
+!/.github/workflows/
 !/data/workflows/
 !/docs/contracts/
 !/js/assets/
@@ -15,6 +17,7 @@
 !/docs/contracts/bridge-v3/
 !/.comfyignore
 !/.gitattributes
+!/.github/workflows/publish.yml
 !/.gitignore
 !/LICENSE
 !/README.md
