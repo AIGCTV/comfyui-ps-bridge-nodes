@@ -21,16 +21,12 @@
 !/.gitignore
 !/LICENSE
 !/README.md
-!/RELEASE_MANIFEST.md
 !/__init__.py
 !/data/workflows/example-roundtrip.json
 !/data/workflows/example-roundtrip.manifest.json
 !/data/workflows/example-roundtrip.ui.json
 !/data/workflows/manifest.json
-!/docs/contracts/bridge-v3/README.md
 !/docs/contracts/bridge-v3/bridge.schema.json
-!/docs/contracts/bridge-v3/errors.json
-!/docs/contracts/bridge-v3/node-catalog.json
 !/docs/contracts/bridge-v3/pipeline-v1.schema.json
 !/example_workflows/PS_Bridge_Roundtrip.jpg
 !/example_workflows/PS_Bridge_Roundtrip.json

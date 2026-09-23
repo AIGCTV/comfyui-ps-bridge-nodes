@@ -49,7 +49,7 @@ Photoshop / Vplugins  ⇄  ComfyUI PS Bridge Nodes  ⇄  ComfyUI 工作流
 - 支持 ComfyUI V3 自定义节点 API 的较新版本 ComfyUI。
 - 已验证环境：ComfyUI core `0.34.0`、frontend `1.49.6`、Python `3.12.10`。
 - 推荐使用 ComfyUI 经典画布。Vue Nodes 可保留参数和切换测试模式，但自定义节点布局、图片上传和预览尚未完整支持。
-- 如需连接 Photoshop，需要另行安装兼容 Bridge contract 3 的 Vplugins / Photoshop 端。
+- 如需连接 Photoshop，需要另行安装兼容版本的 Vplugins。
 
 ### 安装
 
@@ -133,7 +133,7 @@ PS Images · RGB  →  你的图像处理节点  →  Send to PS · RGB
 
 ### 连接 Photoshop / Vplugins
 
-1. 从 [Vplugins 发布仓库](https://github.com/AIGCTV/Vplugins-releases) 获取配套应用，并确保 ComfyUI 节点端和 Vplugins / Photoshop 端都支持 Bridge contract 3。
+1. 从 [Vplugins 发布仓库](https://github.com/AIGCTV/Vplugins-releases) 获取配套应用，并确保 ComfyUI PS Bridge Nodes 与 Vplugins 使用兼容版本。
 2. 在 ComfyUI 中打开要测试的工作流，并确认末端包含 **Send to PS**。
 3. 点击顶部工具栏的 **PS Vplugins** 链接图标开启测试模式。测试目标会跟随当前工作流标签页。
 4. 状态为灰色表示测试关闭，红色表示已开启但尚未连通，绿色表示当前目标已连接。
@@ -266,7 +266,7 @@ ALPHA 的宽高必须与 RGB 完全一致。如果处理流程缩放或裁剪了
 
 **顶部状态一直是红色或离线**
 
-确认两端都支持 Bridge contract 3、Vplugins 已启动，并且没有另一个浏览器占用测试目标。必要时重启两端，然后重新开启测试模式。
+确认 ComfyUI PS Bridge Nodes 与 Vplugins 版本兼容、Vplugins 已启动，并且没有另一个浏览器占用测试目标。必要时重启两端，然后重新开启测试模式。
 
 **旧工作流提示节点或端口不兼容**
 
@@ -324,7 +324,7 @@ Photoshop / Vplugins  ⇄  ComfyUI PS Bridge Nodes  ⇄  ComfyUI workflow
 - A recent ComfyUI version with the V3 custom-node API.
 - Verified environment: ComfyUI core `0.34.0`, frontend `1.49.6`, and Python `3.12.10`.
 - The classic ComfyUI canvas is recommended. Vue Nodes can retain parameters and toggle Test Mode, but the custom layout, image upload, and preview are not fully supported yet.
-- A compatible Bridge contract 3 Vplugins / Photoshop component is required for actual Photoshop round trips.
+- A compatible version of Vplugins is required for Photoshop round trips.
 
 ### Installation
 
@@ -408,7 +408,7 @@ Add connections as needed:
 
 ### Connect Photoshop / Vplugins
 
-1. Download the companion application from the [Vplugins releases repository](https://github.com/AIGCTV/Vplugins-releases), and make sure both this ComfyUI extension and the Vplugins / Photoshop component support Bridge contract 3.
+1. Download the companion application from the [Vplugins releases repository](https://github.com/AIGCTV/Vplugins-releases), and make sure ComfyUI PS Bridge Nodes and Vplugins use compatible versions.
 2. Open the workflow in ComfyUI and make sure it ends with **Send to PS**.
 3. Click the **PS Vplugins** link icon in the top toolbar to enable Test Mode. The target follows the current workflow tab.
 4. Gray means Test Mode is off, red means it is enabled but not connected, and green means the current target is connected.
@@ -541,7 +541,7 @@ A local Queue run has no Bridge request identity and only saves temporary previe
 
 **The toolbar status stays red or offline**
 
-Confirm that both ends support Bridge contract 3, Vplugins is running, and another browser does not own the Test Mode target. Restart both ends and re-enable Test Mode if needed.
+Confirm that ComfyUI PS Bridge Nodes and Vplugins are compatible, Vplugins is running, and another browser does not own the Test Mode target. Restart both ends and re-enable Test Mode if needed.
 
 **An old workflow reports incompatible nodes or ports**
 
