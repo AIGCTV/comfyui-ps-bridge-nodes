@@ -6,7 +6,7 @@ from jsonschema import Draft202012Validator
 from .errors import BridgeError
 from .json_codec import loads, canonical_bytes
 
-SCHEMA_PATH = Path(__file__).resolve().parents[1] / "docs" / "contracts" / "bridge-v3" / "bridge.schema.json"
+SCHEMA_PATH = Path(__file__).resolve().parent / "contracts" / "bridge.schema.json"
 
 @lru_cache(maxsize=1)
 def document():

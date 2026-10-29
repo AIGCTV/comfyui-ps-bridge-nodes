@@ -21,7 +21,7 @@ from .requests import TERMINAL
 from .storage import atomic_json, atomic_bytes, read_json
 from .diagnostics import trace
 
-SCHEMA_PATH = Path(__file__).resolve().parents[1] / "docs/contracts/bridge-v3/pipeline-v1.schema.json"
+SCHEMA_PATH = Path(__file__).resolve().parent / "contracts" / "pipeline-v1.schema.json"
 SCHEMA_BYTES = SCHEMA_PATH.read_bytes()
 SCHEMA = loads(SCHEMA_BYTES)
 UI_LIMIT = 16 * 1024 * 1024
