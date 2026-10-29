@@ -1,3 +1,4 @@
+import {responseError, requestError} from "./transport_errors.js";
 import {t,initLocalization} from "./i18n.js";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
@@ -39,8 +40,10 @@ const client=new ParameterSyncClient({
       if(!node?.__psUI)return;
       const body=JSON.stringify({...client.context(),payload:{scope:client.session.scope,runId:payload.runId,nodeId:binding.nodeId}});
       await node.__psUI.loadPreview(async signal=>{
-        const response=await api.fetchApi("/ps-bridge/v3/editor/preview",{method:"POST",headers:client.headers(),body,signal});
-        if(!response.ok)throw new Error(t("Preview unavailable"));
+        let response;
+        try{response=await api.fetchApi("/ps-bridge/v3/editor/preview",{method:"POST",headers:client.headers(),body,signal});}
+        catch(error){throw requestError("/ps-bridge/v3/editor/preview",error);}
+        if(!response.ok)throw await responseError(response,"/ps-bridge/v3/editor/preview");
         return response.blob();
       },"business");
     }));

@@ -35,31 +35,7 @@ def validate_pipeline(name, value):
     return value
 
 
-def safe_name(value, limit):
-    return value if isinstance(value, str) and 0 < len(value) <= limit and all(c.isalnum() or c in "_.:- " for c in value) else None
-
-
-def rejection_diagnostic(body, prompt):
-    """Never retain validator text, received values, credentials or input config."""
-    nodes = []
-    source = body.get("node_errors", {}) if isinstance(body, dict) else {}
-    if isinstance(source, dict):
-        for node_id, node in list(source.items())[:64]:
-            if not safe_name(node_id, 256) or not isinstance(node, dict):
-                continue
-            errors = []
-            for error in node.get("errors", [])[:16]:
-                if not isinstance(error, dict):
-                    continue
-                item = {"code": safe_name(error.get("type"), 128) or "validation_failed", "message": "Node input validation failed"}
-                extra = error.get("extra_info", {})
-                field = safe_name(extra.get("input_name"), 128) if isinstance(extra, dict) else None
-                if field:
-                    item["inputName"] = field
-                errors.append(item)
-            if errors:
-                nodes.append({"nodeId": node_id, "nodeType": safe_name(prompt.get(node_id, {}).get("class_type"), 256) or "UnknownNode", "errors": errors})
-    return nodes
+from .safe_diagnostics import safe_name, rejection_diagnostic, rejection_message
 
 
 class Subscription:
@@ -462,7 +438,7 @@ class Pipeline:
             if kind in {"execution_success", "execution_error", "execution_interrupted"}:
                 from .backend_runner import execution_failure
                 self.runs.finish(run_id, success=kind == "execution_success", interrupted=kind == "execution_interrupted",
-                                 execution_error=execution_failure([[kind, data]]))
+                                 execution_error=execution_failure([[kind, data]], run["prompt"], run.get("resultError")))
                 return
             payload = {}
             if kind == "executed":
@@ -518,7 +494,7 @@ class Pipeline:
             atomic_json(self._path(run_id), state)
             self._publish(self._event(self.runs.public(run), state, "snapshot"), run)
             nodes = rejection["nodeErrors"]
-            message = "; ".join("Node " + n["nodeId"] + " (" + n["nodeType"] + "): input validation failed" for n in nodes[:16]) or "ComfyUI rejected the prepared prompt; inspect node validation"
+            message = rejection_message(nodes)
             return self.runs.update(run_id, status="failed", error={"code": "PROMPT_REJECTED", "message": message[:4096], "retryable": False})
 
     async def close(self):

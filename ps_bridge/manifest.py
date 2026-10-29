@@ -56,7 +56,7 @@ def validate_ui(ui):
                 walk(item)
     walk(ui)
     for kind in PARAMETER_NODES:
-        require(counts.get(kind, 0) <= 1, "DUPLICATE_PARAMETER_NODE", f"Only one {kind} is allowed")
+        require(counts.get(kind, 0) <= 1, "DUPLICATE_PARAMETER_NODE", "The workflow contains duplicate singleton parameter nodes.")
     slots = []
     def images(value):
         if isinstance(value, dict):
@@ -74,20 +74,23 @@ def validate_ui(ui):
             for item in value:
                 images(item)
     images(ui)
-    require(len(slots) == len(set(slots)), "DUPLICATE_IMAGE_SLOT", "Each image name may occur only once")
+    require(len(slots) == len(set(slots)), "DUPLICATE_IMAGE_SLOT", "The workflow contains duplicate image slots.")
 
 def validate_node_uniqueness(prompt):
     counts, slots = {}, set()
-    for node in prompt.values():
+    for node_id, node in prompt.items():
         kind = node.get("class_type")
         counts[kind] = counts.get(kind, 0) + 1
-        require(kind not in LEGACY_NODES, "LEGACY_WORKFLOW_UNSUPPORTED", "Recreate retired bridge nodes")
+        require(kind not in LEGACY_NODES, "LEGACY_WORKFLOW_UNSUPPORTED", "Recreate retired bridge nodes", nodeId=str(node_id))
         if kind == "VP_Image":
             slot = node["inputs"].get("slot")
-            require(slot in SLOTS and slot not in slots, "DUPLICATE_IMAGE_SLOT", "Each image name may occur only once")
+            require(slot in SLOTS, "BINDING_INVALID", "Image slot must be main or ref1 through ref5", nodeId=str(node_id), field="slot", inputName="slot")
+            require(slot not in slots, "DUPLICATE_IMAGE_SLOT", "The workflow contains duplicate image slots.", nodeId=str(node_id), field="slot", inputName="slot")
             slots.add(slot)
     for kind in PARAMETER_NODES:
-        require(counts.get(kind, 0) <= 1, "DUPLICATE_PARAMETER_NODE", f"Only one {kind} is allowed")
+        if counts.get(kind, 0) > 1:
+            node_id = next(key for key, node in reversed(list(prompt.items())) if node.get("class_type") == kind)
+            require(False, "DUPLICATE_PARAMETER_NODE", "The workflow contains duplicate singleton parameter nodes.", nodeId=str(node_id))
 
 def definition_object(manifest, prompt):
     definition = {k: copy.deepcopy(v) for k, v in manifest.items()
@@ -183,7 +186,7 @@ def validate(manifest, raw_api, *, installed=None, ui=None, published=True, prof
             info[node_id] = _bridge_node_info(kind)
     validate_node_uniqueness(prompt)
     for kind in PARAMETER_NODES:
-        require(counts.get(kind, 0) <= 1, "DUPLICATE_PARAMETER_NODE", f"Only one {kind} is allowed")
+        require(counts.get(kind, 0) <= 1, "DUPLICATE_PARAMETER_NODE", "The workflow contains duplicate singleton parameter nodes.")
     for node_id, node in prompt.items():
         if node_id not in info:
             continue
@@ -361,7 +364,7 @@ def candidate(raw_api, metadata, *, installed=None, ui=None):
         if kind == "VP_Image":
             images.append({"nodeId": node_id, "slot": inputs["slot"], "required": inputs["required"]})
             if inputs["slot"] == "main":
-                require(selection["nodeId"] is None, "DUPLICATE_IMAGE_SLOT", "Only one main image is supported")
+                require(selection["nodeId"] is None, "DUPLICATE_IMAGE_SLOT", "The workflow contains duplicate image slots.")
                 selection = {"nodeId": node_id, "missingPolicy": "full"}
         elif kind == "VP_SendToPS":
             results.append({"nodeId": node_id, "resultId": inputs["result_id"], "order": len(results), "required": True})

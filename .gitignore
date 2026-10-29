@@ -27,6 +27,7 @@
 !/data/workflows/example-roundtrip.ui.json
 !/data/workflows/manifest.json
 !/docs/contracts/bridge-v3/bridge.schema.json
+!/docs/contracts/bridge-v3/diagnostic-messages.json
 !/docs/contracts/bridge-v3/pipeline-v1.schema.json
 !/example_workflows/PS_Bridge_Roundtrip.jpg
 !/example_workflows/PS_Bridge_Roundtrip.json
@@ -60,6 +61,7 @@
 !/js/resource_scope.js
 !/js/test_mode_client.js
 !/js/test_mode_toolbar.js
+!/js/transport_errors.js
 !/js/workflow_export.js
 !/locales/en/commands.json
 !/locales/en/main.json
@@ -96,6 +98,7 @@
 !/ps_bridge/result_assets.py
 !/ps_bridge/routes.py
 !/ps_bridge/run_preparation.py
+!/ps_bridge/safe_diagnostics.py
 !/ps_bridge/schemas.py
 !/ps_bridge/security.py
 !/ps_bridge/service.py

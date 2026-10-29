@@ -23,10 +23,13 @@ def bounds(value, field):
     require(v["right"] > v["left"] and v["bottom"] > v["top"], "ASSET_INVALID", "Rectangle must have positive size", field=field)
 
 def _inspect_png(data, *, preview=False):
-    require(isinstance(data, bytes) and 0 < len(data) <= BRIDGE_MAX_ASSET_BYTES, "ASSET_INVALID", "PNG exceeds byte limit", status=413)
+    require(isinstance(data, bytes), "ASSET_INVALID", "PNG content must be bytes")
+    require(len(data) > 0, "ASSET_INVALID", "PNG content is empty")
+    require(len(data) <= BRIDGE_MAX_ASSET_BYTES, "ASSET_INVALID", "PNG exceeds byte limit", status=413)
     require(data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) > 33, "ASSET_INVALID", "Expected a complete PNG")
     width, height, bit_depth, color_type = struct.unpack(">IIBB", data[16:26])
-    require(0 < width * height <= BRIDGE_MAX_PIXELS, "ASSET_INVALID", "PNG exceeds pixel limit", status=413)
+    require(width > 0 and height > 0, "ASSET_INVALID", "PNG dimensions must be positive")
+    require(width * height <= BRIDGE_MAX_PIXELS, "ASSET_INVALID", "PNG exceeds pixel limit", status=413)
     require(bit_depth == 8 and color_type in (0, 2, 6), "UNSUPPORTED_PIXEL_FORMAT", "Only 8-bit grayscale/RGB/RGBA PNG is supported")
     try:
         with Image.open(io.BytesIO(data)) as image:
@@ -139,7 +142,8 @@ class AssetRegistry:
         relative = f"{file['subfolder']}/{file['name']}" if file["subfolder"] else file["name"]
         try:
             path = resolve_inside(self.input_dir, relative, allow_subdirs=True)
-            require(path.is_file() and path.stat().st_size <= BRIDGE_MAX_ASSET_BYTES, "ASSET_INVALID", "Input file missing or too large")
+            require(path.is_file(), "ASSET_NOT_FOUND", "Input image file does not exist", status=404)
+            require(path.stat().st_size <= BRIDGE_MAX_ASSET_BYTES, "ASSET_INVALID", "Input image file exceeds the byte limit", status=413)
             with path.open("rb") as stream:
                 data = stream.read(BRIDGE_MAX_ASSET_BYTES + 1)
         except (ValueError, OSError) as exc:

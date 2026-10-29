@@ -21,7 +21,7 @@ def validate_scope(scope):
     require(scope["providerId"] in PROVIDERS, "CONTRACT_UNSUPPORTED", "Unknown provider")
     for key, value in scope.items():
         if key == "draftRevision":
-            require(type(value) is int and value >= 0, "DRAFT_CHANGED", "Invalid draft revision")
+            require(type(value) is int and value >= 0, "PARAMETER_INVALID", "Invalid draft revision")
         else:
             identifier(value, key)
     return digest(scope)
@@ -79,7 +79,7 @@ class SessionRegistry:
                 require(isinstance(graph, dict) and {"graphId", "draftRevision", "api", "ui"} <= set(graph),
                         "BINDING_INVALID", "Editor attach requires a formally exported graph")
                 identifier(graph["graphId"], "graphId")
-                require(type(graph["draftRevision"]) is int and graph["draftRevision"] >= 0, "DRAFT_CHANGED", "Invalid draft revision")
+                require(type(graph["draftRevision"]) is int and graph["draftRevision"] >= 0, "PARAMETER_INVALID", "Invalid draft revision")
                 validate_ui(graph["ui"])
                 exported = api_prompt(graph["api"])
                 require(definition_digest(session["manifest"], exported) == session["manifest"]["definitionSha256"],
@@ -180,7 +180,7 @@ class SessionRegistry:
             session, attach = self.authorize(client_id, envelope, controller=durable)
             key = "durableRevision" if durable else "appliedRevision"
             revision = envelope["payload"].get(key)
-            require(type(revision) is int and 0 <= revision <= session["revision"], "REVISION_CONFLICT", "Invalid acknowledgment revision")
+            require(type(revision) is int and 0 <= revision <= session["revision"], "PARAMETER_INVALID", "Invalid acknowledgment revision")
             previous = session["durableRevision"] if durable else attach["appliedRevision"]
             require(previous is None or revision >= previous, "REVISION_CONFLICT", "Acknowledgment cannot move backwards")
             if durable:

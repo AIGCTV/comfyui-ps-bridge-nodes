@@ -29,8 +29,6 @@
     "Batch must be an integer from 1 to 4": "Batch must be an integer from 1 to 4",
     "Prompt must be text": "Prompt must be text",
     "This image name is in use. Choose a free name; up to six image names are supported": "This image name is in use. Choose a free name; up to six image names are supported",
-    "The old port layout is incompatible. Recreate the six nodes": "The old port layout is incompatible. Recreate the six nodes",
-    "This old node is incompatible. Recreate it using the six current nodes": "This old node is incompatible. Recreate it using the six current nodes",
     "At most six PS Images nodes are allowed. Remove the extra nodes": "At most six PS Images nodes are allowed. Remove the extra nodes",
     "Invalid or duplicate image name. Choose a free image name": "Invalid or duplicate image name. Choose a free image name",
     "Invalid value, range or step": "Invalid value, range or step",
@@ -80,6 +78,22 @@
     "Replace offline test editor": "Replace offline test editor",
     "Replace the offline editor and test this workflow instead?": "Replace the offline editor and test this workflow instead?",
     "PS Vplugins: Toggle test mode": "PS Vplugins: Toggle test mode",
-    "The exported node target is missing or ambiguous": "The exported node target is missing or ambiguous"
+    "The exported node target is missing or ambiguous": "The exported node target is missing or ambiguous",
+    "Node {id} ({type}) has incompatible outputs: {ports}. Replace this node with its current version.": "Node {id} ({type}) has incompatible outputs: {ports}. Replace this node with its current version.",
+    "Node {id} ({type}) is retired. Replace this affected node using the current node catalog.": "Node {id} ({type}) is retired. Replace this affected node using the current node catalog.",
+    "port {index}: {actual} → {expected}": "port {index}: {actual} → {expected}",
+    "missing": "missing",
+    "absent": "absent",
+    "The response provided no displayable error description": "The response provided no displayable error description",
+    "The request did not complete within 16 seconds": "The request did not complete within 16 seconds",
+    "The browser reported a request error; no HTTP response was available": "The browser reported a request error; no HTTP response was available",
+    "No close reason was provided": "No close reason was provided",
+    "Bridge WebSocket closed (code {code}): {reason}": "Bridge WebSocket closed (code {code}): {reason}",
+    "unavailable": "unavailable",
+    "Bridge WebSocket did not connect within 16 seconds": "Bridge WebSocket did not connect within 16 seconds",
+    "The browser reported a WebSocket error; no specific cause was provided": "The browser reported a WebSocket error; no specific cause was provided",
+    "Preview failed: {reason}": "Preview failed: {reason}",
+    "No safe preview error detail was provided": "No safe preview error detail was provided",
+    "Unsafe diagnostic detail was omitted": "Unsafe diagnostic detail was omitted"
   }
 }

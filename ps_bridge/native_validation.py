@@ -25,7 +25,7 @@ def validate_native_prompt(data):
         try:
             configured_fields(node['class_type'], node.get('inputs', {}))
         except BridgeError as error:
-            error.error['field'] = str(node_id)
+            error.error['nodeId'] = str(node_id)
             raise
 
 
@@ -36,8 +36,9 @@ async def native_prompt_validation(request, handler):
             # aiohttp caches the body; the original core handler reads the same bytes.
             validate_native_prompt(json.loads((await request.read()).decode('utf-8')))
         except BridgeError as error:
-            field = error.error.get('field', '')
+            node_id = error.error.get('nodeId', '')
+            extra = {'input_name': error.error['inputName']} if error.error.get('inputName') else {}
             return web.json_response({'error': {'type':'ps_vplugins_validation', 'message':str(error),
-                'details':error.code, 'extra_info':{}}, 'node_errors': {field:{'errors':[
-                    {'type':error.code, 'message':error.error['message'], 'details':field, 'extra_info':{}}]}} if field else {}}, status=400)
+                'details':error.code, 'extra_info':{}}, 'node_errors': {node_id:{'errors':[
+                    {'type':error.code, 'message':error.error['message'], 'details':error.error.get('field', ''), 'extra_info':extra}]}} if node_id else {}}, status=400)
     return await handler(request)

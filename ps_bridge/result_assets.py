@@ -22,7 +22,8 @@ class ResultAssets:
         except OSError as exc:
             raise BridgeError("RESULT_NOT_FOUND", "Result asset is unavailable", status=404) from exc
         require(stat.S_ISREG(value.st_mode), "RESULT_NOT_FOUND", "Result asset is not a file", status=404)
-        require(0 < value.st_size <= BRIDGE_MAX_ASSET_BYTES, "RESULT_INVALID", "Result exceeds PNG byte limit", status=413)
+        require(value.st_size > 0, "RESULT_INVALID", "Persisted result file is empty", status=413)
+        require(value.st_size <= BRIDGE_MAX_ASSET_BYTES, "RESULT_TOO_LARGE", "Persisted result exceeds the 64 MiB PNG byte limit", status=413)
         return value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns
 
     def _remember(self, path, result, signature):

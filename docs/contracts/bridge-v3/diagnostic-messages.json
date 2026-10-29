@@ -1,0 +1,118 @@
+{
+  "version": 1,
+  "description": "Exact value-free messages for owned node diagnostics; not a wire schema or capability. Unknown text is never trusted by prefix.",
+  "owned": {
+    "VP_Seed": {
+      "PARAMETER_INVALID": [
+        "Expected a JSON number",
+        "Expected a finite safe number",
+        "Integer parameter requires integral value and bounds",
+        "Value is outside the declared range",
+        "label must be text",
+        "Seed mode must be fixed or random"
+      ],
+      "MANIFEST_INVALID": [
+        "Expected a non-empty identifier"
+      ],
+      "DUPLICATE_PARAMETER_NODE": [
+        "Only one VP_Seed is allowed",
+        "The workflow contains duplicate singleton parameter nodes."
+      ]
+    },
+    "VP_Slider": {
+      "PARAMETER_INVALID": [
+        "Expected a JSON number",
+        "Expected a finite safe number",
+        "Integer parameter requires integral value and bounds",
+        "Value is outside the declared range",
+        "label must be text",
+        "Slider minimum must be less than maximum",
+        "Invalid numeric range or step",
+        "Nearest step falls outside the declared range"
+      ],
+      "MANIFEST_INVALID": [
+        "Expected a non-empty identifier",
+        "Invalid parameter source",
+        "Source role and type are incompatible",
+        "Local count must be 1–4",
+        "Seed role requires VP_Seed"
+      ],
+      "DUPLICATE_PARAMETER_NODE": [
+        "Only one VP_Slider is allowed",
+        "The workflow contains duplicate singleton parameter nodes."
+      ],
+      "JSON_INVALID": [
+        "Expected strict UTF-8 JSON without duplicate keys or unsafe numbers"
+      ]
+    },
+    "VP_Prompt": {
+      "PARAMETER_INVALID": [
+        "Expected a JSON number",
+        "Expected a finite safe number",
+        "Integer parameter requires integral value and bounds",
+        "Value is outside the declared range",
+        "label must be text",
+        "Expected a string, not null",
+        "Invalid Unicode"
+      ],
+      "MANIFEST_INVALID": [
+        "Expected a non-empty identifier",
+        "Invalid parameter source",
+        "Source role and type are incompatible",
+        "Local count must be 1–4",
+        "Seed role requires VP_Seed"
+      ],
+      "DUPLICATE_PARAMETER_NODE": [
+        "Only one VP_Prompt is allowed",
+        "The workflow contains duplicate singleton parameter nodes."
+      ],
+      "JSON_INVALID": [
+        "Expected strict UTF-8 JSON without duplicate keys or unsafe numbers"
+      ]
+    },
+    "VP_Batch": {
+      "PARAMETER_INVALID": [
+        "Expected a JSON number",
+        "Expected a finite safe number",
+        "Integer parameter requires integral value and bounds",
+        "Value is outside the declared range",
+        "label must be text",
+        "Batch must be a JSON integer",
+        "Batch count must be a JSON integer",
+        "Batch must be an integer from 1 to 4"
+      ],
+      "MANIFEST_INVALID": [
+        "Expected a non-empty identifier"
+      ],
+      "DUPLICATE_PARAMETER_NODE": [
+        "Only one VP_Batch is allowed",
+        "The workflow contains duplicate singleton parameter nodes."
+      ]
+    },
+    "VP_Image": {
+      "BINDING_INVALID": [
+        "Image slot must be main or ref1 through ref5"
+      ],
+      "DUPLICATE_IMAGE_SLOT": [
+        "Each image name may occur only once",
+        "The workflow contains duplicate image slots."
+      ],
+      "PARAMETER_INVALID": [
+        "Invalid image slot",
+        "Reference images do not have a selection"
+      ],
+      "MISSING_MEDIA": [
+        "Required image is absent",
+        "Select an input file for standalone testing"
+      ],
+      "ASSET_INVALID": [
+        "File test path must be inside ComfyUI input",
+        "Unsupported image size or animation"
+      ],
+      "UNSUPPORTED_PIXEL_FORMAT": [
+        "Expected an 8-bit color or grayscale image",
+        "High-bit-depth PNG is unsupported"
+      ]
+    }
+  }
+}

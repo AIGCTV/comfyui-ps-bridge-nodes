@@ -29,8 +29,6 @@
     "Batch must be an integer from 1 to 4": "Batch 必须是 1 到 4 的整数",
     "Prompt must be text": "Prompt 必须是文本",
     "This image name is in use. Choose a free name; up to six image names are supported": "此图像名已占用，请选择空闲名称；最多使用六个图像名",
-    "The old port layout is incompatible. Recreate the six nodes": "旧端口布局不兼容，请重新创建六节点",
-    "This old node is incompatible. Recreate it using the six current nodes": "旧节点不兼容，请使用六节点重新创建",
     "At most six PS Images nodes are allowed. Remove the extra nodes": "PS Images 最多 6 个，请移除多余节点",
     "Invalid or duplicate image name. Choose a free image name": "图像名无效或重复，请选择空闲图像名",
     "Invalid value, range or step": "数值、范围或步幅无效",
@@ -80,6 +78,22 @@
     "Replace offline test editor": "接管离线测试",
     "Replace the offline editor and test this workflow instead?": "是否接管已离线的测试会话，并开始测试当前工作流？",
     "PS Vplugins: Toggle test mode": "PS Vplugins：开启／关闭测试模式",
-    "The exported node target is missing or ambiguous": "导出节点的对应关系缺失或不唯一，请检查子图中的节点"
+    "The exported node target is missing or ambiguous": "导出节点的对应关系缺失或不唯一，请检查子图中的节点",
+    "Node {id} ({type}) has incompatible outputs: {ports}. Replace this node with its current version.": "节点 {id}（{type}）的输出端口不兼容：{ports}。请仅将此节点替换为当前版本。",
+    "Node {id} ({type}) is retired. Replace this affected node using the current node catalog.": "节点 {id}（{type}）已停用，请使用当前节点目录替换此受影响节点。",
+    "port {index}: {actual} → {expected}": "端口 {index}：实际 {actual} → 期望 {expected}",
+    "missing": "缺失",
+    "absent": "无此端口",
+    "The response provided no displayable error description": "响应未提供可显示的错误说明",
+    "The request did not complete within 16 seconds": "请求在 16 秒内未完成",
+    "The browser reported a request error; no HTTP response was available": "浏览器报告请求错误，未取得 HTTP 响应",
+    "No close reason was provided": "未提供关闭原因",
+    "Bridge WebSocket closed (code {code}): {reason}": "Bridge WebSocket 已关闭（代码 {code}）：{reason}",
+    "unavailable": "未提供",
+    "Bridge WebSocket did not connect within 16 seconds": "Bridge WebSocket 在 16 秒内未连接成功",
+    "The browser reported a WebSocket error; no specific cause was provided": "浏览器报告 WebSocket 错误，未提供具体原因",
+    "Preview failed: {reason}": "预览失败：{reason}",
+    "No safe preview error detail was provided": "未提供可安全显示的预览错误详情",
+    "Unsafe diagnostic detail was omitted": "已省略可能包含输入或堆栈的诊断内容"
   }
 }

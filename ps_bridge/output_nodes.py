@@ -18,6 +18,7 @@ from .storage import atomic_bytes
 from .media_nodes import run_context, HIDDEN
 from .parameter_nodes import text
 from .diagnostics import trace
+from .safe_diagnostics import operation_error, record_result_error
 
 def validate_image_batch(images, alpha):
     require(isinstance(images, torch.Tensor) and images.ndim == 4 and images.shape[-1] in (3, 4),
@@ -126,7 +127,6 @@ class VPSendToPS(io.ComfyNode):
         # Business results use durable output, so ComfyUI temp cleanup cannot erase recoverable files.
         output = Path(folder_paths.get_output_directory() if request_id else folder_paths.get_temp_directory())
         folder_type = "output" if request_id else "temp"
-        output.mkdir(parents=True, exist_ok=True)
         prefix = safe_component(filename_prefix, "VPlugins")
         saved = []
         pnginfo = PngImagePlugin.PngInfo()
@@ -136,10 +136,14 @@ class VPSendToPS(io.ComfyNode):
             if value is not None:
                 pnginfo.add_text(key, canonical_bytes(value).decode("utf-8"))
         image = None
+        stage, filename = "Create result directory", None
         try:
+            output.mkdir(parents=True, exist_ok=True)
             for index, image in enumerate(frames):
                 filename = f"{prefix}_{uuid.uuid4().hex}_{index:03d}.png"
+                stage = "Encode result PNG"
                 data = encode_png(image, pnginfo)
+                stage = "Persist result PNG"
                 atomic_bytes(output / filename, data)
                 ref = {"filename": filename, "subfolder": "", "type": folder_type}
                 saved.append(ui.SavedResult(filename=filename, subfolder="", type=io.FolderType(folder_type)))
@@ -155,14 +159,19 @@ class VPSendToPS(io.ComfyNode):
                     with service.runs.lock:
                         current = service.runs.get(request_id)
                         record["batchIndex"] = sum(r["resultId"] == result_id for r in current["results"])
+                        stage = "Register result asset"
                         service.result_assets.register(output / filename, record)
                         # A frame becomes ready only after its atomic PNG write
                         # and journal commit. Later frames cannot hold it back.
+                        stage = "Commit result journal"
                         service.runs.record_results(request_id, context.prompt_id, node_id, result_id, [record])
                 image.close()
-        except OSError:
+        except OSError as exc:
             if run:
-                service.runs.update(request_id, resultError={"code": "RESULT_SAVE_FAILED", "message": "Failed to persist a PNG result", "retryable": False})
+                error = operation_error(stage, exc, code="RESULT_SAVE_FAILED", nodeId=node_id,
+                                        resultId=result_id, folder=folder_type,
+                                        fileId=byte_digest(filename.encode("utf-8"))[:16] if filename else None)
+                record_result_error(service.runs, request_id, error)
             raise
         finally:
             if image is not None:

@@ -1,4 +1,5 @@
 import {t,localizeNode} from "./i18n.js";
+import {responseError, requestError, safeErrorText} from './transport_errors.js';
 import {NODE_TYPES,kind,value,graphNodes,issues,SLOTS,SLOT_LABELS,randomSeed,normalizeSlider} from './node_bindings.js';
 import {NODE_WIDTH,layouts,controlLayout,hitControl,drawControls} from './canvas_controls.js';
 import {commitChange,beginGesture} from './node_state.js';
@@ -70,6 +71,7 @@ export function installNode(node,app,api=app.api){
   localizeNode(node);
 
   const revoke=()=>{if(state.url)URL.revokeObjectURL(state.url);state.url=null;};
+  let previewError='';
   state.loadPreview=async(loader,previewKind='local')=>{
     const operation=resources.start('preview');
     if(!operation.current())return;
@@ -84,9 +86,10 @@ export function installNode(node,app,api=app.api){
       const cancel=()=>{image.src='';};operation.signal.addEventListener('abort',cancel,{once:true});
       try{await image.decode();}finally{operation.signal.removeEventListener('abort',cancel);}
       if(!operation.current())return;
-      revoke();state.url=ownedURL;ownedURL=null;state.image=image;state.previewKind=previewKind;state.refresh();
+      revoke();state.url=ownedURL;ownedURL=null;state.image=image;state.previewKind=previewKind;
+      if(state.error===previewError)state.error="";previewError="";state.refresh();
     }catch(error){
-      if(operation.current()){revoke();state.image=null;state.previewKind=null;state.refresh();}
+      if(operation.current()&&!operation.signal.aborted){revoke();state.image=null;state.previewKind=null;previewError=t('Preview failed: {reason}',{reason:safeErrorText(error.message)||t('No safe preview error detail was provided')});report(previewError);}
     }finally{if(ownedURL)URL.revokeObjectURL(ownedURL);}
   };
   state.showPreview=(url)=>{
@@ -108,9 +111,13 @@ export function installNode(node,app,api=app.api){
       if(!operation.current())return;
       try{
         const form=new FormData();form.append('image',file);form.append('type','input');form.append('overwrite','false');
-        const response=await api.fetchApi('/upload/image',{method:'POST',body:form,signal:operation.signal});
-        if(!response.ok)throw new Error(t("Upload failed"));
-        const data=await response.json();if(!operation.current())return;
+        let response;
+        try{response=await api.fetchApi('/upload/image',{method:'POST',body:form,signal:operation.signal});}
+        catch(error){throw requestError('/upload/image',error);}
+        if(!response.ok)throw await responseError(response,'/upload/image');
+        let data;
+        try{data=await response.json();}catch{throw await responseError(response,'/upload/image',null);}
+        if(!operation.current())return;
         if(typeof data.name!=='string'||!data.name)throw new Error(t("The upload returned an invalid file name"));
         state.change({file_name:[data.subfolder,data.name].filter(Boolean).join('/'),selection_file:'',request_id:''},true);
         state.previewFile();

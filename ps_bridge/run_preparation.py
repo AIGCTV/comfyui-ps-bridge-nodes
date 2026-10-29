@@ -32,7 +32,8 @@ class RunPreparation:
                 return existing
             session, _ = self.sessions.authorize(owner, payload, controller=True)
             expected = payload["expectedRevision"]
-            require(type(expected) is int and expected == session["revision"], "REVISION_CONFLICT", "Run revision is stale",
+            require(type(expected) is int, "PARAMETER_INVALID", "Expected run revision must be an integer")
+            require(expected == session["revision"], "REVISION_CONFLICT", "Run revision is stale",
                     currentRevision=session["revision"], snapshot=self.sessions.snapshot(session))
             scope = session["scope"]
             require(payload["submitOwner"] == ("bridge" if scope["providerId"] == "comfy_bridge" else "rust"),

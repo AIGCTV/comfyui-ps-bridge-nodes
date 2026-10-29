@@ -30,9 +30,15 @@ export function issues(nodes) {
   for (const node of nodes) {
     const type = kind(node);
     if(OUTPUT_TYPES[type]&&Array.isArray(node.outputs)
-      &&JSON.stringify(node.outputs.map(p=>p.type))!==JSON.stringify(OUTPUT_TYPES[type]))
-      found.push({node,message:t("The old port layout is incompatible. Recreate the six nodes")});
-    if (RETIRED.includes(type)) found.push({node, message: t("This old node is incompatible. Recreate it using the six current nodes")});
+      &&JSON.stringify(node.outputs.map(p=>p.type))!==JSON.stringify(OUTPUT_TYPES[type])) {
+      const expected=OUTPUT_TYPES[type], ports=[];
+      for(let i=0;i<Math.max(expected.length,node.outputs.length);i++)
+        if(node.outputs[i]?.type!==expected[i])ports.push(t('port {index}: {actual} → {expected}',
+          {index:i,actual:node.outputs[i]?.type??t('missing'),expected:expected[i]??t('absent')}));
+      found.push({node,message:t('Node {id} ({type}) has incompatible outputs: {ports}. Replace this node with its current version.',
+        {id:node.id,type,ports:ports.join('; ')})});
+    }
+    if (RETIRED.includes(type)) found.push({node, message: t('Node {id} ({type}) is retired. Replace this affected node using the current node catalog.',{id:node.id,type})});
     if (PARAMETER_TYPES.includes(type)) {
       if (counts.has(type)) found.push({node, message: t('Only one {node} is allowed per workflow',{node:nodeName(type)})});
       counts.set(type, node);

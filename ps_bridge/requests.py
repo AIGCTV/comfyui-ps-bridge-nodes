@@ -171,7 +171,14 @@ class RunStore:
                      for r in run["manifest"]["results"]):
                 code = "MISSING_REQUIRED_RESULT"
             status = "cancelled" if interrupted else "failed" if code else "succeeded"
-            error = {"code": code, "message": code, "retryable": False} if code else None
+            message = code
+            if code == "NO_RESULTS":
+                message = "ComfyUI completed, but the bound Photoshop outputs returned no images."
+            elif code == "MISSING_REQUIRED_RESULT":
+                message = "A required Photoshop output declared by the workflow returned no image."
+            elif code == "EXECUTION_INTERRUPTED":
+                message = "ComfyUI reported an interrupted execution terminal state; the initiator was not provided"
+            error = {"code": code, "message": message, "retryable": False} if code else None
             if code == "EXECUTION_FAILED":
                 error = execution_error or {"code": code, "message": "ComfyUI execution failed without a node diagnostic", "retryable": False}
                 validate_shape("error", error, code="BINDING_INVALID")

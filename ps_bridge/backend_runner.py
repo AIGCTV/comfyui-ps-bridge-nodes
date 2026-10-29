@@ -9,27 +9,7 @@ from .errors import BridgeError, require
 from .json_codec import digest, execution_prompt
 from .requests import TERMINAL
 
-def execution_failure(messages):
-    """Keep the node diagnostic, without copying tensors, prompt inputs or traceback."""
-    for event in reversed(messages):
-        if not isinstance(event, (tuple, list)) or len(event) != 2 or event[0] != "execution_error":
-            continue
-        detail = event[1]
-        if not isinstance(detail, dict):
-            continue
-        message = detail.get("exception_message")
-        if not isinstance(message, str) or not message.strip():
-            continue
-        error = {"code": "EXECUTION_FAILED", "message": message.strip()[:4096], "retryable": False}
-        node_id = detail.get("node_id")
-        node_id = str(node_id) if isinstance(node_id, (str, int)) and not isinstance(node_id, bool) else ""
-        if node_id and len(node_id) <= 256 and all(ord(c) >= 32 for c in node_id):
-            error["nodeId"] = node_id
-            node_type = detail.get("node_type")
-            label = f" ({node_type[:128]})" if isinstance(node_type, str) and node_type else ""
-            error["message"] = f"Node {node_id}{label}: {error['message']}"
-        return error
-    return None
+from .safe_diagnostics import execution_failure, rejection_message
 
 class ComfyAdapter:
     def __init__(self, server):
@@ -59,7 +39,7 @@ class ComfyAdapter:
                         diagnostic = rejection_diagnostic(loads(bytes(data)), prompt)
                     except (BridgeError, ValueError):
                         diagnostic = []
-                    exc = BridgeError("PROMPT_REJECTED", "ComfyUI rejected the prepared prompt; inspect node validation", status=422)
+                    exc = BridgeError("PROMPT_REJECTED", rejection_message(diagnostic), status=422)
                     exc.node_errors = diagnostic
                     raise exc
                 if response.status >= 400:
@@ -188,7 +168,7 @@ class BackendRunner:
                     success = status.get("status_str") == "success" and any(m[0] == "execution_success" for m in messages)
                     # Results are journaled by VP_SendToPS before ComfyUI completes. Never recover another node's files.
                     self.runs.finish(run_id, success=success, interrupted=interrupted,
-                                     execution_error=execution_failure(messages))
+                                     execution_error=execution_failure(messages, run["prompt"], run.get("resultError")))
             result = self.runs.public(self.runs.get(run_id))
             self.notify(result)
             return result

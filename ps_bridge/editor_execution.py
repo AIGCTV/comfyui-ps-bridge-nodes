@@ -59,6 +59,8 @@ class EditorExecution:
             if run["promptId"] and not state["promptId"]:
                 state["promptId"] = run["promptId"]
                 self._emit(state, "registered", state["registration"])
+            if run.get("resultError"):
+                state["resultError"] = copy.deepcopy(run["resultError"])
             if run["status"] in {"succeeded", "failed", "cancelled"} and state["promptId"] and not state["terminal"]:
                 kind = {"succeeded": "execution_success", "failed": "execution_error", "cancelled": "execution_interrupted"}[run["status"]]
                 self.native(run["runId"], kind, {"prompt_id": state["promptId"]})
@@ -77,8 +79,17 @@ class EditorExecution:
             return False
         # Execution errors may contain arbitrary inputs, credentials and paths.
         if kind == "execution_error":
-            data = {key: copy.deepcopy(data[key]) for key in ("prompt_id", "node_id", "node_type", "executed") if key in data}
-            data.update(exception_type="BridgeExecutionError", exception_message="ComfyUI execution failed; inspect the server log", traceback=[])
+            from .safe_diagnostics import execution_failure, safe_name
+            with self.lock:
+                prompt = self.runs[run_id]["registration"]["prompt"]
+                result_error = self.runs[run_id].get("resultError")
+            error = execution_failure([[kind, data]], prompt, result_error)
+            safe = {"prompt_id": data["prompt_id"], "exception_type": safe_name(data.get("exception_type"), 128) or "BridgeExecutionError",
+                    "exception_message": error["message"], "traceback": []}
+            if error.get("nodeId"):
+                safe["node_id"] = error["nodeId"]
+                safe["node_type"] = safe_name(prompt[error["nodeId"]].get("class_type"), 256) or "UnknownNode"
+            data = safe
         else:
             data = copy.deepcopy(data)
         if len(canonical_bytes(data)) > CONTROL_LIMIT - 65536:

@@ -59,30 +59,40 @@ def normalize(schema, value):
 def seed_schema():
     return {"type": "int", "min": 0, "max": MAX_SAFE_INTEGER, "step": 1}
 
+def at_input(name, operation, *args):
+    """Attach source identity without replacing an existing field or input name."""
+    try:
+        return operation(*args)
+    except BridgeError as exc:
+        exc.error.setdefault("inputName", name)
+        exc.error.setdefault("field", name)
+        raise
+
 def configured_fields(class_type, inputs):
     if class_type not in {"VP_Seed", "VP_Slider", "VP_Prompt", "VP_Batch"}:
         return []
     if class_type == "VP_Batch":
-        require(type(inputs.get("value")) is int, "PARAMETER_INVALID", "Batch must be a JSON integer")
+        require(type(inputs.get("value")) is int, "PARAMETER_INVALID", "Batch must be a JSON integer", field="value", inputName="value")
         schema = {"paramId": "count", "label": "Batch", "type": "int", "min": 1, "max": 4, "step": 1,
                   "source": {"kind": "canonical", "key": "count"}}
     else:
-        schema = {"paramId": identifier(inputs.get("param_id")), "label": inputs.get("label", "")}
-        require(isinstance(schema["label"], str), "PARAMETER_INVALID", "label must be text")
+        schema = {"paramId": at_input("param_id", identifier, inputs.get("param_id"), "param_id"), "label": inputs.get("label", "")}
+        require(isinstance(schema["label"], str), "PARAMETER_INVALID", "label must be text", field="label", inputName="label")
         if class_type == "VP_Seed":
-            require(inputs.get("mode") in ("fixed", "random"), "PARAMETER_INVALID", "Seed mode must be fixed or random")
+            require(inputs.get("mode") in ("fixed", "random"), "PARAMETER_INVALID", "Seed mode must be fixed or random", field="mode", inputName="mode")
             schema.update(seed_schema(), semantic="seed", defaultMode=inputs["mode"],
                           source={"kind": "canonical", "key": "seed"})
         else:
-            schema["source"] = loads(inputs.get("source_json", "null"))
+            schema["source"] = at_input("source_json", loads, inputs.get("source_json", "null"))
             if class_type == "VP_Slider":
                 schema.update(type="float", **{key: inputs.get(key) for key in ("min", "max", "step")})
-                require(number(schema["min"]) < number(schema["max"]), "PARAMETER_INVALID", "Slider minimum must be less than maximum")
+                require(at_input("min", number, schema["min"]) < at_input("max", number, schema["max"]), "PARAMETER_INVALID", "Slider minimum must be less than maximum", field="min", inputName="min")
+                require(at_input("step", number, schema["step"]) > 0, "PARAMETER_INVALID", "Invalid numeric range or step", field="step", inputName="step")
             else:
                 schema["type"] = "string"
     name = "text" if class_type == "VP_Prompt" else "value"
-    schema["default"] = normalize(schema, inputs.get(name))
-    validate_source(schema)
+    schema["default"] = at_input(name, normalize, schema, inputs.get(name))
+    at_input("source_json", validate_source, schema)
     return [(name, 0, schema)]
 
 def validate_source(parameter):

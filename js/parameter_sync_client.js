@@ -1,4 +1,5 @@
 import {t} from "./i18n.js";
+import {responseError, requestError, socketClosed, waitForSocket} from './transport_errors.js';
 import { parameterChange } from "./node_bindings.js";
 import { EditorPipelinePreview } from "./editor_pipeline.js";
 import { EditorExecutionClient } from "./editor_execution.js";
@@ -32,11 +33,16 @@ export class ParameterSyncClient {
       ...(this.clientToken?{"X-PS-Bridge-Client-Id":this.clientId,"X-PS-Bridge-Client-Token":this.clientToken}:{})};
   }
   async http(path,body) {
-    const abort=new AbortController(),timer=setTimeout(()=>abort.abort(),16000);
+    let timedOut=false;
+    const abort=new AbortController(),timer=setTimeout(()=>{timedOut=true;abort.abort();},16000);
+    const route="/ps-bridge/v3"+path;
     try {
-      const response=await this.fetchApi("/ps-bridge/v3"+path,{method:body===undefined?"GET":"POST",headers:this.headers(),signal:abort.signal,...(body===undefined?{}:{body:JSON.stringify(body)})});
-      const data=await response.json();
-      if(!response.ok||!data.ok)throw Object.assign(new Error(data.error?.message || "Bridge request failed"),{detail:data.error});
+      let response;
+      try {response=await this.fetchApi(route,{method:body===undefined?"GET":"POST",headers:this.headers(),signal:abort.signal,...(body===undefined?{}:{body:JSON.stringify(body)})});}
+      catch(error){throw requestError(route,error,timedOut);}
+      let data;
+      try {data=await response.json();} catch {throw await responseError(response,route,null);}
+      if(!response.ok||!data?.ok)throw await responseError(response,route,data);
       return data.data;
     } finally {clearTimeout(timer);}
   }
@@ -48,13 +54,10 @@ export class ParameterSyncClient {
       this.clientToken=enrolled.clientToken;
       const url=new URL("./ps-bridge/v3/ws",location.href);url.protocol=location.protocol==="https:"?"wss:":"ws";
       const socket=this.socket=new WebSocket(url);
-      await new Promise((resolve,reject)=>{
-        const timer=setTimeout(()=>{socket.close();reject(new Error(t("Bridge connection failed")));},16000);
-        socket.onopen=()=>{clearTimeout(timer);resolve(undefined);};
-        socket.onerror=socket.onclose=()=>{clearTimeout(timer);reject(new Error(t("Bridge connection failed")));};
-      });
+      await waitForSocket(socket);
       this.socket.onmessage=e=>{if(this.socket===socket)this.receive(JSON.parse(e.data));};
-      this.socket.onclose=()=>this.failTransport(socket);
+      this.socket.onclose=event=>this.failTransport(socket,socketClosed(event));
+      this.socket.onerror=()=>{if(this.socket===socket)this.changed(t('The browser reported a WebSocket error; no specific cause was provided'));};
       const health=await this.rpc("hello",{role:"editor",clientToken:this.clientToken},false);
       if(health.testModeVersion!==3) {
         this.socket.close();throw new Error(t("Test mode requires version 3 on both ends. Update and restart the bridge"));
@@ -68,9 +71,9 @@ export class ParameterSyncClient {
   }
   failTransport(socket,error=new Error(t("Bridge disconnected. Attach again"))) {
     if(this.socket!==socket)return;
-    this.socket=undefined;this.abandon();
+    this.socket=undefined;
     for(const p of this.pending.values()){clearTimeout(p.timer);p.reject(error);}
-    this.pending.clear();this.changed(t("Offline"));this.disconnected();
+    this.pending.clear();this.abandon();this.changed(t("Offline")+": "+error.message);this.disconnected();
     socket?.close();
   }
   context() {

@@ -5,6 +5,7 @@ import logging
 from urllib.parse import urlsplit
 from aiohttp import web, WSMsgType
 from .errors import BridgeError, require
+from .safe_diagnostics import operation_error
 from .json_codec import loads, canonical_bytes
 from .manager import BridgeManager, BridgeClient
 from .protocol import BRIDGE_MAX_MESSAGE_BYTES, BRIDGE_MAX_ASSET_BYTES, contract_capabilities
@@ -79,11 +80,14 @@ def create_routes(service):
                     return web.json_response({"ok": True, "data": result}, dumps=lambda value: canonical_bytes(value).decode("utf-8"))
                 except BridgeError as exc:
                     return web.json_response({"ok": False, "error": exc.error}, status=exc.status)
-                except (KeyError, TypeError, ValueError, OverflowError):
-                    return web.json_response({"ok": False, "error": {"code": "MESSAGE_INVALID", "message": "Invalid request structure", "retryable": False}}, status=422)
-                except Exception:
-                    logger.exception("Bridge request failed")
-                    return web.json_response({"ok": False, "error": {"code": "INTERNAL_ERROR", "message": "Bridge operation failed; inspect server logs", "retryable": False}}, status=500)
+                except Exception as exc:
+                    # Preserve existing wire categories; a caught ValueError alone
+                    # does not prove that the caller supplied an invalid structure.
+                    invalid = isinstance(exc, (KeyError, TypeError, ValueError, OverflowError))
+                    error = operation_error(f"{method} /ps-bridge/v3{path}", exc,
+                                            code="MESSAGE_INVALID" if invalid else "INTERNAL_ERROR")
+                    logger.error("%s", error["message"])
+                    return web.json_response({"ok": False, "error": error}, status=422 if invalid else 500)
                 finally:
                     if uploading:
                         uploads -= 1
@@ -244,9 +248,17 @@ def create_routes(service):
                 await manager.handle(client, raw)
             except BridgeError as exc:
                 await ws.send_json(manager.envelope("error", {"error": exc.error}, reply_to=envelope.get("messageId") if isinstance(envelope, dict) else None))
-            except Exception:
-                logger.exception("Bridge WebSocket dispatch failed")
-                await ws.send_json(manager.envelope("error", {"error": {"code": "MESSAGE_INVALID", "message": "Invalid control message", "retryable": False}},
+            except Exception as exc:
+                operation = "WebSocket control dispatch"
+                if isinstance(envelope, dict):
+                    try:
+                        validate_shape("clientMessage", envelope)
+                        operation += " " + envelope["type"]
+                    except BridgeError:
+                        pass
+                error = operation_error(operation, exc, code="MESSAGE_INVALID")
+                logger.error("%s", error["message"])
+                await ws.send_json(manager.envelope("error", {"error": error},
                                                    reply_to=envelope.get("messageId") if isinstance(envelope, dict) else None))
         try:
             first = await asyncio.wait_for(ws.receive(), timeout=5)
