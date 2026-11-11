@@ -6,7 +6,7 @@
     "Prompt": "提示词",
     "Fixed": "固定",
     "Random": "随机",
-    "New seed": "单次随机",
+    "New seed": "新种子",
     "MIN": "最小值",
     "MAX": "最大值",
     "STEP": "步长",
@@ -94,6 +94,19 @@
     "The browser reported a WebSocket error; no specific cause was provided": "浏览器报告 WebSocket 错误，未提供具体原因",
     "Preview failed: {reason}": "预览失败：{reason}",
     "No safe preview error detail was provided": "未提供可安全显示的预览错误详情",
-    "Unsafe diagnostic detail was omitted": "已省略可能包含输入或堆栈的诊断内容"
+    "Unsafe diagnostic detail was omitted": "已省略可能包含输入或堆栈的诊断内容",
+    "Parameter source": "参数来源",
+    "Custom parameter": "自定义参数",
+    "Custom parameter name": "自定义参数名称",
+    "Enter a valid custom parameter name": "请输入有效的自定义参数名称",
+    "Invalid parameter source": "参数来源无效",
+    "Negative prompt": "负面提示词",
+    "Resolution": "分辨率",
+    "Strength": "强度",
+    "Image source": "图片来源",
+    "Upload image": "上传图片",
+    "Image preview": "图像预览",
+    "Previous image": "上一张",
+    "Next image": "下一张"
   }
 }

@@ -78,12 +78,13 @@ class TestTargetRegistry:
         require(definition_digest(session["manifest"], prompt) == session["manifest"]["definitionSha256"],
                 "DRAFT_CHANGED", "Definition changed during capture")
         for parameter in session["manifest"]["parameters"]:
-            target = parameter["target"]
-            require(prompt[target["nodeId"]]["inputs"][target["inputName"]] == session["values"][parameter["paramId"]],
-                    "DRAFT_CHANGED", "Exported widget values differ from committed values")
-            if "modeTarget" in parameter:
-                require(prompt[target["nodeId"]]["inputs"]["mode"] == session["seedModes"][parameter["paramId"]],
-                        "DRAFT_CHANGED", "Exported Seed strategy differs from committed strategy")
+            from .manifest import parameter_targets
+            for target in parameter_targets(parameter):
+                require(prompt[target["nodeId"]]["inputs"][target["inputName"]] == session["values"][parameter["paramId"]],
+                        "DRAFT_CHANGED", "Exported widget values differ from committed values")
+                if "modeTarget" in parameter:
+                    require(prompt[target["nodeId"]]["inputs"]["mode"] == session["seedModes"][parameter["paramId"]],
+                            "DRAFT_CHANGED", "Exported Seed strategy differs from committed strategy")
         capture["snapshot"] = {"prompt": prompt, "ui": copy.deepcopy(payload["ui"])}
         return {"captureRequestId": capture_id, "status": "captured"}
 

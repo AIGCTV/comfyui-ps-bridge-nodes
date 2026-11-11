@@ -45,9 +45,14 @@ def _authorize_http(request):
 
 async def read_body(request):
     data = bytearray()
-    async for chunk in request.content.iter_chunked(65536):
-        data.extend(chunk)
-        require(len(data) <= BRIDGE_MAX_MESSAGE_BYTES, "MESSAGE_TOO_LARGE", "JSON control message exceeds size limit", status=413)
+    try:
+        async for chunk in request.content.iter_chunked(65536):
+            data.extend(chunk)
+            require(len(data) <= BRIDGE_MAX_MESSAGE_BYTES, "MESSAGE_TOO_LARGE", "JSON control message exceeds size limit", status=413)
+    except ConnectionResetError as exc:
+        # The caller abandoned this HTTP body (e.g. an obsolete preview).
+        # Cancel only this request; failures after body intake remain errors.
+        raise asyncio.CancelledError from exc
     return loads(bytes(data))
 
 def create_routes(service):
@@ -322,13 +327,14 @@ def register_routes():
     if _ROUTES_REGISTERED:
         return
     from server import PromptServer
-    from .native_validation import native_prompt_validation
+    from .native_validation import native_prompt_validation, prepare_native_shared
     service = get_service()
     routes, manager = create_routes(service)
     for entry in routes:
         PromptServer.instance.routes.route(entry.method, entry.path)(entry.handler)
     service.manager = manager
     PromptServer.instance.app.middlewares.append(native_prompt_validation)
+    PromptServer.instance.add_on_prompt_handler(prepare_native_shared)
     loop = PromptServer.instance.loop
     service.runner.monitor = loop.create_task(service.runner.watch())
     async def shutdown(_app):

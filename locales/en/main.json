@@ -94,6 +94,19 @@
     "The browser reported a WebSocket error; no specific cause was provided": "The browser reported a WebSocket error; no specific cause was provided",
     "Preview failed: {reason}": "Preview failed: {reason}",
     "No safe preview error detail was provided": "No safe preview error detail was provided",
-    "Unsafe diagnostic detail was omitted": "Unsafe diagnostic detail was omitted"
+    "Unsafe diagnostic detail was omitted": "Unsafe diagnostic detail was omitted",
+    "Parameter source": "Parameter source",
+    "Custom parameter": "Custom parameter",
+    "Custom parameter name": "Custom parameter name",
+    "Enter a valid custom parameter name": "Enter a valid custom parameter name",
+    "Invalid parameter source": "Invalid parameter source",
+    "Negative prompt": "Negative prompt",
+    "Resolution": "Resolution",
+    "Strength": "Strength",
+    "Image source": "Image source",
+    "Upload image": "Upload image",
+    "Image preview": "Image preview",
+    "Previous image": "Previous image",
+    "Next image": "Next image"
   }
 }

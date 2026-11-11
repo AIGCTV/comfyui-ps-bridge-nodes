@@ -29,7 +29,12 @@ export class EditorPipelinePreview {
       &&Number.isSafeInteger(event.runOrder)&&event.runOrder>0
       &&Number.isSafeInteger(event.sequence)&&event.sequence>=0&&object(event.payload);
   }
-  receive(event) {
+  execution(event) {
+    if(event.kind==="snapshot"&&!("editorExecution" in event))
+      this.client.execution?.unavailable("未收到完整的执行反馈数据，进度显示暂不可用。");
+    if(event.editorExecution)this.client.execution?.receive(event.editorExecution);
+  }
+  receive(event,{executionApplied=false}={}) {
     if(!this.valid(event))return;
     let state=this.active;
     if(state&&event.runOrder<state.runOrder)return;
@@ -42,6 +47,8 @@ export class EditorPipelinePreview {
         resources:[],resourceBytes:0,nodeSequences:new Map()};
     }
     if(event.sequence<=state.sequence||state.pending.has(event.sequence))return;
+    // Live feedback must not wait for queued UI resources or snapshot downloads.
+    if(!executionApplied)this.execution(event);
     this.diagnostic("editor.received",state,event.sequence,{promptId:event.promptId});
     state.observedSequence=Math.max(state.observedSequence,event.sequence);
     const bytes=encoder.encode(JSON.stringify(event)).byteLength;
@@ -58,6 +65,7 @@ export class EditorPipelinePreview {
     if(!this.current(state))return;
     if(!this.valid(event,state.session)||event.kind!=="snapshot"||event.runId!==state.runId
       ||event.runOrder!==state.runOrder||event.sequence<state.sequence)throw new Error("Invalid editor run snapshot");
+    this.execution(event);
     this.show(state,event);
     state.sequence=event.sequence;
     if(state.sequence>=state.observedSequence)state.recover=false;
@@ -100,7 +108,6 @@ export class EditorPipelinePreview {
         ||run.definitionSha256!==state.session.definitionSha256)throw new Error("Editor run identity changed");
       state.run=run;
     }
-    if(event.editorExecution)this.client.execution?.receive(event.editorExecution);
     const descriptor=event.payload.nodeOutputsResource,outputs=event.payload.nodeOutputs;
     if(descriptor)this.validateResource(descriptor);
     if(event.kind==="snapshot"&&(descriptor||outputs)) {

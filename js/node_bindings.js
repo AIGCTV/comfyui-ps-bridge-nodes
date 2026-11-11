@@ -39,16 +39,8 @@ export function issues(nodes) {
         {id:node.id,type,ports:ports.join('; ')})});
     }
     if (RETIRED.includes(type)) found.push({node, message: t('Node {id} ({type}) is retired. Replace this affected node using the current node catalog.',{id:node.id,type})});
-    if (PARAMETER_TYPES.includes(type)) {
-      if (counts.has(type)) found.push({node, message: t('Only one {node} is allowed per workflow',{node:nodeName(type)})});
-      counts.set(type, node);
-    }
-    if (type === "VP_Image") {
-      const slot = value(node, "slot");
-      if (!SLOTS.includes(slot) || slots.has(slot)) found.push({node, message: tooManyImages
-        ? t("At most six PS Images nodes are allowed. Remove the extra nodes") : t("Invalid or duplicate image name. Choose a free image name")});
-      slots.set(slot, node);
-    }
+    if (type === "VP_Image" && !SLOTS.includes(value(node,"slot")))
+      found.push({node,message:t("Invalid image slot")});
   }
   return found;
 }
@@ -84,13 +76,15 @@ export function randomSeed(cryptoObject = globalThis.crypto) {
   cryptoObject.getRandomValues(words);
   return (words[0] & 0x1fffff) * 4294967296 + words[1];
 }
+export const parameterTargets = p => [p.target,...(p.additionalTargets||[])];
 /** @param {import('../types/editor.js').Manifest} manifest @param {{id:string|number}} node
  * @param {Record<string, unknown>} changes */
 export function parameterChange(manifest, node, changes) {
   const entries = [], seedModes = {};
   for (const p of manifest.parameters) {
-    if (p.target.nodeId !== String(node.id)) continue;
-    if (Object.hasOwn(changes, p.target.inputName)) entries.push({paramId: p.paramId, value: changes[p.target.inputName]});
+    const target=parameterTargets(p).find(t=>t.nodeId===String(node.id));
+    if (!target) continue;
+    if (Object.hasOwn(changes, target.inputName)) entries.push({paramId: p.paramId, value: changes[target.inputName]});
     if (p.modeTarget && Object.hasOwn(changes, "mode")) seedModes[p.paramId] = changes.mode;
   }
   return {changes: entries, seedModes};

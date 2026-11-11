@@ -96,8 +96,8 @@ class VPSendToPS(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(node_id="VP_SendToPS", display_name="Send to PS", category=NODE_CATEGORY,
             is_output_node=True, not_idempotent=True,
-            inputs=[io.Image.Input("images", display_name="RGB"), io.Mask.Input("alpha", display_name="ALPHA", optional=True), text("result_id", "result", advanced=True),
-                    text("filename_prefix", "VPlugins", advanced=True), text("request_id", advanced=True)],
+            inputs=[io.Image.Input("images", display_name="RGB"), io.Mask.Input("alpha", display_name="ALPHA", optional=True), text("result_id", "result"),
+                    text("filename_prefix", "VPlugins", advanced=True), text("request_id")],
             outputs=[io.Image.Output("RGB"), io.Mask.Output("ALPHA")], hidden=HIDDEN)
 
     @classmethod

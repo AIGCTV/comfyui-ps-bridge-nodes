@@ -20,7 +20,7 @@ export class EditorExecutionClient {
       bufferedCount:0,bufferedBytes:0,
       abort:new AbortController(),recovering:new Map()};
     try {
-      await this.host.attach();
+      await this.host.attach(state.abort.signal);
       if(!this.current(state))return;
       state.ready=true;
       const pending=state.pending.splice(0);state.pendingBytes=0;
@@ -163,7 +163,7 @@ export class EditorExecutionClient {
           } else break;
           this.clearBuffer(state,recovery,sequence);
         }
-        this.client.pipeline?.receive(snapshot);
+        this.client.pipeline?.receive(snapshot,{executionApplied:true});
         if(state.runs.get(runId).sequence>=recovery.highWater)return;
       }
       throw new Error("Execution snapshot did not close the observed event gap");

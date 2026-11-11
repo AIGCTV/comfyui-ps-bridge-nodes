@@ -10,8 +10,8 @@ def text(name, default="", **kwargs):
     return io.String.Input(name, default=default, socketless=True, **kwargs)
 
 def binding(param_id, label, source):
-    return [text("param_id", param_id, advanced=True), text("label", label, advanced=True),
-            text("source_json", source, advanced=True)]
+    return [text("param_id", param_id), text("label", label, advanced=True),
+            text("source_json", source)]
 
 def check_graph(cls):
     """Defense for direct native /prompt execution, including file-only workflows."""
@@ -24,7 +24,7 @@ class VPSeed(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return io.Schema(node_id="VP_Seed", display_name="PS Seed", category=NODE_CATEGORY,
-            inputs=[text("param_id", "seed", advanced=True), text("label", "Seed", advanced=True),
+            inputs=[text("param_id", "seed"), text("label", "Seed", advanced=True),
                     io.Int.Input("value", default=42, min=0, max=BRIDGE_MAX_SEED, socketless=True),
                     io.Combo.Input("mode", options=["fixed", "random"], default="fixed", socketless=True)],
             outputs=[io.Int.Output("seed")], hidden=[io.Hidden.extra_pnginfo, io.Hidden.prompt],

@@ -7,7 +7,7 @@ BRIDGE_CONTRACT_VERSION = 3
 BRIDGE_MANIFEST_VERSION = 1
 BRIDGE_PARAMETER_SYNC_VERSION = 2
 BRIDGE_TEST_MODE_VERSION = 3
-BRIDGE_PACKAGE_VERSION = "0.3.4"
+BRIDGE_PACKAGE_VERSION = "0.3.5"
 BRIDGE_MAX_IMAGES = 6
 BRIDGE_MAX_BATCH_COUNT = 4
 BRIDGE_MAX_SEED = 9007199254740991
@@ -32,10 +32,10 @@ def _node(inputs, outputs, singleton=False):
     ], "singleton": singleton}
 
 NODE_CATALOG = {
-    "VP_Seed": _node({"param_id": "STRING", "label": "STRING", "value": "INT", "mode": "COMBO"}, [("seed", "INT")], True),
-    "VP_Slider": _node({"value": "FLOAT", "min": "FLOAT", "max": "FLOAT", "step": "FLOAT", "param_id": "STRING", "label": "STRING", "source_json": "STRING"}, [("value", "FLOAT")], True),
-    "VP_Prompt": _node({"text": "STRING", "param_id": "STRING", "label": "STRING", "source_json": "STRING"}, [("text", "STRING")], True),
-    "VP_Batch": _node({"value": "INT"}, [("count", "INT")], True),
+    "VP_Seed": _node({"param_id": "STRING", "label": "STRING", "value": "INT", "mode": "COMBO"}, [("seed", "INT")]),
+    "VP_Slider": _node({"value": "FLOAT", "min": "FLOAT", "max": "FLOAT", "step": "FLOAT", "param_id": "STRING", "label": "STRING", "source_json": "STRING"}, [("value", "FLOAT")]),
+    "VP_Prompt": _node({"text": "STRING", "param_id": "STRING", "label": "STRING", "source_json": "STRING"}, [("text", "STRING")]),
+    "VP_Batch": _node({"value": "INT"}, [("count", "INT")]),
     "VP_Image": _node({"slot": "COMBO", "required": "BOOLEAN", "file_name": "STRING", "selection_file": "STRING", "request_id": "STRING"},
                           [("RGB", "IMAGE"), ("ALPHA", "MASK"), ("MASK", "MASK"), ("width", "INT"), ("height", "INT")]),
     "VP_SendToPS": _node({"images": "IMAGE", "alpha": "MASK", "result_id": "STRING", "filename_prefix": "STRING", "request_id": "STRING"}, [("RGB", "IMAGE"), ("ALPHA", "MASK")]),

@@ -271,6 +271,14 @@
               "type": "integer",
               "minimum": 1,
               "maximum": 9007199254740991
+            },
+            "additionalTargets": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/target"
+              }
             }
           },
           "required": [
@@ -327,6 +335,14 @@
               "minimum": -9007199254740991,
               "maximum": 9007199254740991,
               "exclusiveMinimum": 0
+            },
+            "additionalTargets": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/target"
+              }
             }
           },
           "required": [
@@ -365,6 +381,14 @@
             },
             "default": {
               "type": "string"
+            },
+            "additionalTargets": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/target"
+              }
             }
           },
           "required": [
@@ -400,6 +424,14 @@
             },
             "default": {
               "type": "boolean"
+            },
+            "additionalTargets": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/target"
+              }
             }
           },
           "required": [
@@ -443,6 +475,14 @@
               },
               "minItems": 1,
               "uniqueItems": true
+            },
+            "additionalTargets": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/target"
+              }
             }
           },
           "required": [
@@ -502,6 +542,14 @@
             },
             "modeTarget": {
               "$ref": "#/$defs/target"
+            },
+            "additionalTargets": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/target"
+              }
             }
           },
           "required": [

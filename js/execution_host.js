@@ -6,13 +6,21 @@ export class ExecutionHost {
     this.app=app;this.api=api;this.loadModule=loadModule;this.jobs=new Map();this.rgthree=null;
   }
   store(name="execution") {return this.app.extensionManager?._p?._s?.get(name);}
-  async attach() {
+  checkPreviewStores() {
+    // Pinia preview stores are lazy: absence means no store-owned previews yet.
+    // Once instantiated, they must expose the cleanup API before we use them.
+    for(const [name,method] of [["jobPreview","clearPreview"],["nodeOutput","revokePreviewsByLocatorId"]]) {
+      const store=this.store(name);
+      if(store&&typeof store[method]!=="function")
+        throw new Error(`执行反馈清理接口不可用（${name}.${method}），请检查 ComfyUI 前端兼容性。`);
+    }
+  }
+  async attach(signal) {
     const store=this.store();
     if(!["storeJob","clearActiveJobIfStale","clearWorkflowStatus","getWorkflowStatus"].every(name=>typeof store?.[name]==="function")
-      ||!store.queuedJobs||!store.nodeProgressStatesByJob
-      ||typeof this.store("jobPreview")?.clearPreview!=="function"
-      ||typeof this.store("nodeOutput")?.revokePreviewsByLocatorId!=="function")
-      throw new Error("当前 ComfyUI 前端不支持完整测试运行反馈与清理，请更新节点包与前端后刷新页面。");
+      ||!store.queuedJobs||!store.nodeProgressStatesByJob)
+      throw new Error("当前执行反馈或清理接口尚不可用，请检查 ComfyUI 前端是否已加载完成。");
+    this.checkPreviewStores();
     this.rgthree=null;
     this.graph=this.app.rootGraph||this.app.graph;
     this.workflow=this.app.extensionManager?.workflow?.activeWorkflow;
@@ -21,7 +29,7 @@ export class ExecutionHost {
       const extensions=await this.api.getExtensions?.();
       if(extensions?.some(path=>path.includes("rgthree"))) {
         const module=await this.loadModule(this.api.apiURL?.("/rgthree/common/prompt_service.js")||"/rgthree/common/prompt_service.js");
-        if(typeof module.SERVICE?.getOrMakePrompt==="function")this.rgthree=module.SERVICE;
+        if(!signal?.aborted&&typeof module.SERVICE?.getOrMakePrompt==="function")this.rgthree=module.SERVICE;
       }
     } catch { /* Optional extension absence never disables native feedback. */ }
   }
@@ -68,6 +76,7 @@ export class ExecutionHost {
   }
   preview(event,descriptor,blob) {
     if(!this.owned(event)||this.jobs.get(event.runId)?.terminal)return;
+    this.checkPreviewStores();
     const before=new Map(Object.entries(this.app.nodePreviewImages||{}));
     this.dispatch("b_preview_with_metadata",{blob,nodeId:descriptor.nodeId,displayNodeId:descriptor.displayNodeId,
       parentNodeId:descriptor.parentNodeId,realNodeId:descriptor.realNodeId,jobId:event.promptId});

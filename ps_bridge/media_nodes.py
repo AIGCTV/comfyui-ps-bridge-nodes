@@ -72,10 +72,15 @@ class VPImage(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         from .protocol import NODE_CATEGORY
+        from pathlib import Path
+        files = sorted(str(p.relative_to(folder_paths.get_input_directory())).replace('\\', '/')
+                       for p in Path(folder_paths.get_input_directory()).rglob('*')
+                       if p.is_file() and p.suffix.lower() in {'.png', '.jpg', '.jpeg', '.webp'})
         return io.Schema(node_id="VP_Image", display_name="PS Images", category=NODE_CATEGORY,
             inputs=[io.Combo.Input("slot", display_name="Image Name", options=list(SLOTS), default="main", socketless=True),
                     io.Boolean.Input("required", default=True, socketless=True, advanced=True),
-                    text("file_name", advanced=True), text("selection_file", advanced=True), text("request_id", advanced=True)],
+                    io.Combo.Input("file_name", options=['', *files], default='', socketless=True),
+                    text("selection_file", advanced=True), text("request_id")],
             outputs=[io.Image.Output("RGB"), io.Mask.Output("ALPHA"), io.Mask.Output("MASK"),
                      io.Int.Output("width"), io.Int.Output("height")], hidden=HIDDEN, has_intermediate_output=True)
 

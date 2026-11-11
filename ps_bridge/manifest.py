@@ -55,8 +55,6 @@ def validate_ui(ui):
             for item in value:
                 walk(item)
     walk(ui)
-    for kind in PARAMETER_NODES:
-        require(counts.get(kind, 0) <= 1, "DUPLICATE_PARAMETER_NODE", "The workflow contains duplicate singleton parameter nodes.")
     slots = []
     def images(value):
         if isinstance(value, dict):
@@ -74,7 +72,7 @@ def validate_ui(ui):
             for item in value:
                 images(item)
     images(ui)
-    require(len(slots) == len(set(slots)), "DUPLICATE_IMAGE_SLOT", "The workflow contains duplicate image slots.")
+
 
 def validate_node_uniqueness(prompt):
     counts, slots = {}, set()
@@ -85,12 +83,12 @@ def validate_node_uniqueness(prompt):
         if kind == "VP_Image":
             slot = node["inputs"].get("slot")
             require(slot in SLOTS, "BINDING_INVALID", "Image slot must be main or ref1 through ref5", nodeId=str(node_id), field="slot", inputName="slot")
-            require(slot not in slots, "DUPLICATE_IMAGE_SLOT", "The workflow contains duplicate image slots.", nodeId=str(node_id), field="slot", inputName="slot")
+
             slots.add(slot)
-    for kind in PARAMETER_NODES:
-        if counts.get(kind, 0) > 1:
-            node_id = next(key for key, node in reversed(list(prompt.items())) if node.get("class_type") == kind)
-            require(False, "DUPLICATE_PARAMETER_NODE", "The workflow contains duplicate singleton parameter nodes.", nodeId=str(node_id))
+
+def parameter_targets(parameter):
+    return [parameter["target"], *parameter.get("additionalTargets", [])]
+
 
 def definition_object(manifest, prompt):
     definition = {k: copy.deepcopy(v) for k, v in manifest.items()
@@ -99,11 +97,10 @@ def definition_object(manifest, prompt):
     for node in api.values():
         node.pop("_meta", None)
     for param in manifest["parameters"]:
-        target = param["target"]
-        api[target["nodeId"]]["inputs"][target["inputName"]] = param["default"]
-        if "modeTarget" in param:
-            target = param["modeTarget"]
-            api[target["nodeId"]]["inputs"][target["inputName"]] = param["defaultMode"]
+        for target in parameter_targets(param):
+            api[target["nodeId"]]["inputs"][target["inputName"]] = param["default"]
+            if "modeTarget" in param:
+                api[target["nodeId"]]["inputs"]["mode"] = param["defaultMode"]
     for target in manifest["runtimeTargets"]:
         api[target["nodeId"]]["inputs"][target["inputName"]] = ""
     return {"definition": definition, "apiDefinition": api}
@@ -185,8 +182,6 @@ def validate(manifest, raw_api, *, installed=None, ui=None, published=True, prof
         if kind in NODE_CATALOG:
             info[node_id] = _bridge_node_info(kind)
     validate_node_uniqueness(prompt)
-    for kind in PARAMETER_NODES:
-        require(counts.get(kind, 0) <= 1, "DUPLICATE_PARAMETER_NODE", "The workflow contains duplicate singleton parameter nodes.")
     for node_id, node in prompt.items():
         if node_id not in info:
             continue
@@ -243,7 +238,7 @@ def validate(manifest, raw_api, *, installed=None, ui=None, published=True, prof
         key = (target["nodeId"], target["inputName"])
         require(key in expected_params and key not in seen_targets, "BINDING_INVALID", "Unknown or reused parameter target")
         schema = expected_params[key]
-        allowed = set(schema) | {"source", "target", "modeTarget"}
+        allowed = set(schema) | {"source", "target", "modeTarget", "additionalTargets"}
         require(set(parameter) <= allowed, "MANIFEST_INVALID", "Unexpected parameter field")
         require(all(parameter.get(k) == v for k, v in schema.items()), "BINDING_INVALID", "Parameter differs from configured node slot")
         require(prompt[key[0]]["inputs"][key[1]] == parameter["default"], "BINDING_INVALID", "Default must already be normalized")
@@ -257,7 +252,15 @@ def validate(manifest, raw_api, *, installed=None, ui=None, published=True, prof
         else:
             require("modeTarget" not in parameter, "BINDING_INVALID", "Only Seed may bind mode")
         normalize(parameter, parameter["default"])
-        seen_targets.add(key); param_ids.add(param_id); sources.add(source)
+        for bound in parameter_targets(parameter):
+            bound_key = (bound["nodeId"], bound["inputName"])
+            require(bound_key in expected_params and bound_key not in seen_targets,
+                    "BINDING_INVALID", "Unknown or reused shared target")
+            peer = expected_params[bound_key]
+            require(all(peer.get(k) == v for k, v in schema.items() if k not in {"paramId", "label"}),
+                    "BINDING_INVALID", "Shared parameter definitions differ")
+            seen_targets.add(bound_key)
+        param_ids.add(param_id); sources.add(source)
     require(seen_targets == set(expected_params), "BINDING_INVALID", "Every active slot must have a parameter")
 
     image_nodes, image_slots = set(), set()
@@ -266,7 +269,7 @@ def validate(manifest, raw_api, *, installed=None, ui=None, published=True, prof
         node_id, slot = image["nodeId"], image["slot"]
         require(node_id in prompt and prompt[node_id]["class_type"] == "VP_Image" and node_id not in image_nodes,
                 "BINDING_INVALID", "Image must bind a unique VP_Image")
-        require(slot in SLOTS and slot not in image_slots and type(image["required"]) is bool and (slot != "main" or image["required"]),
+        require(slot in SLOTS and type(image["required"]) is bool and (slot != "main" or image["required"]),
                 "MANIFEST_INVALID", "Invalid image slot or required flag")
         inputs = prompt[node_id]["inputs"]
         require(inputs["slot"] == slot and inputs["required"] == image["required"], "BINDING_INVALID", "Image binding differs from node")
@@ -278,7 +281,7 @@ def validate(manifest, raw_api, *, installed=None, ui=None, published=True, prof
     require(isinstance(selection, dict) and set(selection) == {"nodeId", "missingPolicy"} and selection["missingPolicy"] in {"full", "empty", "error"},
             "MANIFEST_INVALID", "Invalid selection policy")
     masks = {k for k, n in prompt.items() if n["class_type"] == "VP_Image" and n["inputs"]["slot"] == "main"}
-    require(masks == ({selection["nodeId"]} if selection["nodeId"] is not None else set()), "BINDING_INVALID", "Mask binding mismatch")
+    require((selection["nodeId"] in masks if masks else selection["nodeId"] is None), "BINDING_INVALID", "Mask binding mismatch")
     require(selection["missingPolicy"] == "full", "BINDING_INVALID", "Six-node images use optional selection with full-image fallback")
     expected_runtime = {(node_id, name): ("runId" if name == "request_id" else "empty")
                         for node_id, node in prompt.items() if node["class_type"] in RUNTIME_NODES
@@ -325,12 +328,12 @@ def validate(manifest, raw_api, *, installed=None, ui=None, published=True, prof
 def compile_prompt(manifest, template, values, actual_seeds, run_id):
     prompt = copy.deepcopy(template)
     for parameter in manifest["parameters"]:
-        target = parameter["target"]
         value = normalize(parameter, values[parameter["paramId"]])
-        prompt[target["nodeId"]]["inputs"][target["inputName"]] = value
-        if parameter.get("semantic") == "seed":
-            prompt[target["nodeId"]]["inputs"][target["inputName"]] = actual_seeds[parameter["paramId"]]
-            prompt[parameter["modeTarget"]["nodeId"]]["inputs"]["mode"] = "fixed"
+        for target in parameter_targets(parameter):
+            prompt[target["nodeId"]]["inputs"][target["inputName"]] = value
+            if parameter.get("semantic") == "seed":
+                prompt[target["nodeId"]]["inputs"][target["inputName"]] = actual_seeds[parameter["paramId"]]
+                prompt[target["nodeId"]]["inputs"]["mode"] = "fixed"
     for target in manifest["runtimeTargets"]:
         prompt[target["nodeId"]]["inputs"][target["inputName"]] = run_id if target["source"] == "runId" else ""
     return prompt
@@ -339,11 +342,14 @@ def candidate(raw_api, metadata, *, installed=None, ui=None):
     """Build a reviewable manifest from real API inputs, never widget array positions."""
     prompt = api_prompt(raw_api)
     validate_node_uniqueness(prompt)
+    require(any(n["class_type"] in NODE_CATALOG for n in prompt.values()), "NO_BRIDGE_NODES", "当前工作流不包含comfyui ps bridge nodes节点")
     for node_id, node in prompt.items():
         kind = node["class_type"]
         if kind in NODE_CATALOG:
             declared = set(NODE_CATALOG[kind]["inputs"])
             required = declared - ({"alpha"} if kind == "VP_SendToPS" else set())
+            if kind == "VP_SendToPS" and "images" not in node["inputs"]:
+                raise BridgeError("DRAFT_PENDING", "请连接 Send to PS 的图像输入")
             require(required <= set(node["inputs"]) <= declared, "BINDING_INVALID",
                     "Inputs do not match the six-node format; recreate retired layouts", field=node_id)
     require(isinstance(metadata, dict), "MANIFEST_INVALID", "Export metadata is required")
@@ -360,11 +366,22 @@ def candidate(raw_api, metadata, *, installed=None, ui=None):
             param = {**schema, "source": source, "target": {"nodeId": node_id, "inputName": name}}
             if kind == "VP_Seed":
                 param["modeTarget"] = {"nodeId": node_id, "inputName": "mode"}
-            params.append(param)
+            shared = next((p for p in params if p["source"] == source), None)
+            if shared is None:
+                params.append(param)
+            else:
+                require(shared["type"] == param["type"] and shared.get("semantic") == param.get("semantic"),
+                        "BINDING_INVALID", "Shared source has incompatible node types")
+                shared.setdefault("additionalTargets", []).append(param["target"])
+                for field in ("min", "max", "step"):
+                    if field in shared and kind == "VP_Slider":
+                        inputs[field] = shared[field]
+                inputs[name] = shared["default"]
+                if kind == "VP_Seed":
+                    inputs["mode"] = shared["defaultMode"]
         if kind == "VP_Image":
             images.append({"nodeId": node_id, "slot": inputs["slot"], "required": inputs["required"]})
             if inputs["slot"] == "main":
-                require(selection["nodeId"] is None, "DUPLICATE_IMAGE_SLOT", "The workflow contains duplicate image slots.")
                 selection = {"nodeId": node_id, "missingPolicy": "full"}
         elif kind == "VP_SendToPS":
             results.append({"nodeId": node_id, "resultId": inputs["result_id"], "order": len(results), "required": True})
@@ -374,6 +391,7 @@ def candidate(raw_api, metadata, *, installed=None, ui=None):
                     runtime.append({"nodeId": node_id, "inputName": name, "source": "runId" if name == "request_id" else "empty"})
                     inputs[name] = ""
     # Export a clean execution template: local test filenames are explicit transient fields.
+    require(bool(results), "DRAFT_PENDING", "请添加并连接 Send to PS 输出节点")
     import json
     raw = (json.dumps(prompt, ensure_ascii=False, indent=2, allow_nan=False) + "\n").encode("utf-8")
     references = {image["slot"] for image in images if image["slot"] != "main"}

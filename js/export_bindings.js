@@ -5,18 +5,21 @@ import {pipelineDiagnostics} from "./pipeline_diagnostics.js";
 
 const exportsByApp=new WeakMap();
 /** Resolve formal API IDs to six-node instances, including nested subgraphs.
- * Parameter node kinds are singletons and image slots are unique in a root graph.
+ * Resolve by full graph path so repeated kinds and slots remain unambiguous.
  * Never pick the first bare numeric ID from a recursive graph traversal.
  */
 export function bindExportedNodes(app,manifest,api) {
-  const nodes=graphNodes(app.rootGraph||app.graph),bindings=new Map();
+  const bindings=new Map();
   for(const [id,definition] of Object.entries(api)) {
     if(!NODE_TYPES.includes(definition.class_type))continue;
-    const matches=nodes.filter(n=>kind(n)===definition.class_type&&
-      (kind(n)==="VP_Image"?value(n,"slot")===definition.inputs.slot:
-       kind(n)==="VP_SendToPS"?value(n,"result_id")===definition.inputs.result_id:true));
-    if(matches.length!==1)throw new Error(t("The exported node target is missing or ambiguous"));
-    bindings.set(id,matches[0]);
+    let graph=app.rootGraph||app.graph,node;
+    const path=id.split(":");
+    for(let i=0;i<path.length;i++) {
+      node=graph?._nodes?.find(n=>String(n.id)===path[i]);
+      if(i<path.length-1)graph=node?.subgraph;
+    }
+    if(!node||kind(node)!==definition.class_type)throw new Error(t("The exported node target is missing or ambiguous"));
+    bindings.set(id,node);
   }
   exportsByApp.set(app,{graph:app.rootGraph||app.graph,hash:manifest.definitionSha256,bindings,apiNodeIds:new Set(Object.keys(api))});
 }

@@ -2,9 +2,9 @@ import {responseError, requestError} from "./transport_errors.js";
 import {t,initLocalization} from "./i18n.js";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { NODE_TYPES, kind, value, graphNodes, freeSlot } from "./node_bindings.js";
-import { commitChange, changed } from "./node_state.js";
-import { installStyle, installNode, refreshNode, checkNodes, installCanvasInteractions } from "./node_widgets.js";
+import { NODE_TYPES, kind, value, graphNodes } from "./node_bindings.js";
+import { commitChange, changed, reconcileShared, reconcileResultIds } from "./node_state.js";
+import { installStyle, installNode, refreshNode, checkNodes } from "./node_widgets.js";
 import { editorFor } from "./inline_editor.js";
 import { ParameterSyncClient } from "./parameter_sync_client.js";
 import { applySnapshot } from "./workflow_export.js";
@@ -18,7 +18,7 @@ import {pipelineDiagnostics} from "./pipeline_diagnostics.js";
 
 let status=t("Local mode"), configuring=false, heartbeatBusy=false;
 let renderTestMode=()=>{};
-let testError=null;
+let testOperation=null;
 const notify=(message,severity="info")=>app.extensionManager.toast.add({severity,summary:"PS Vplugins",detail:message,life:5000});
 const client=new ParameterSyncClient({
   executionHost:new ExecutionHost(app,api),
@@ -61,25 +61,35 @@ function metadata() {
     workflowVersion:"0.0.0-dev",name:"PS Vplugins Workflow",providerId:"comfy_bridge"};
   return {...graph.extra.ps_vplugins};
 }
-async function enableTest() {
+function enableTest() {
+  let operation;
   try {
     clearPreviews();
-    if(testMode.exitPending||testMode.intent||(testMode.enabled&&testMode.owned))await testMode.disable();
+    if(testMode.exitPending||testMode.intent||(testMode.enabled&&testMode.owned))operation=testMode.disable();
     else if(testMode.state?.enabled&&testMode.state.ownerClientId!==client.clientId) {
       if(testMode.state.status!=="unavailable")throw new Error(t("Testing belongs to another browser"));
-      const replace=await app.extensionManager.dialog.confirm({title:t("Replace offline test editor"),
-        message:t("Replace the offline editor and test this workflow instead?")});
-      if(replace)await testMode.enable(metadata(),true);
-    } else await testMode.enable(metadata());
-    testError=null;
-  }
-  catch(error){if(testError!==error.message){testError=error.message;notify(error.message,"error");}}
+      operation=app.extensionManager.dialog.confirm({title:t("Replace offline test editor"),
+        message:t("Replace the offline editor and test this workflow instead?")})
+        .then(replace=>{if(replace&&testOperation===operation)return testMode.enable(metadata(),true);});
+    } else operation=testMode.enable(metadata());
+  } catch(error){operation=Promise.reject(error);}
+  if(testOperation===operation)return;
+  testOperation=operation;
+  return operation.catch(error=>{
+    if(testOperation===operation)notify(error.message,"error");
+  }).finally(()=>{if(testOperation===operation)testOperation=null;});
+}
+function reportEdit(operation) {
+  const generation=client.generation;
+  return operation.catch(error=>{
+    if(generation===client.generation)notify(error.message,"error");
+  });
 }
 function clearPreviews(keepLocal=false) {
   for(const node of graphNodes(app.rootGraph||app.graph))if(node.__psUI?.showPreview){
     node.__psUI.closeMenu?.();
+    if(keepLocal&&!value(node,'request_id')&&node.__psUI.previewKind!=='business')continue;
     node.__psUI.resources.invalidate();
-    if(keepLocal&&node.__psUI.previewKind==="local"&&!value(node,"request_id"))continue;
     node.__psUI.showPreview(null);
   }
 }
@@ -98,38 +108,35 @@ app.registerExtension({
   },
   nodeCreated(node) {
     installNode(node,app,api);
-    if(kind(node)==="VP_Image"&&!configuring&&!app.configuringGraph)queueMicrotask(()=>{
+    if(!configuring&&!app.configuringGraph)queueMicrotask(()=>{
       if(configuring||app.configuringGraph||!node.graph)return;
-      const others=graphNodes(app.rootGraph||app.graph).filter(n=>n!==node&&kind(n)==="VP_Image"&&value(n,"slot")===value(node,"slot"));
-      if(others.length){const slot=freeSlot(graphNodes(app.rootGraph||app.graph),node);if(slot)commitChange(node,{slot},{source:'restore'});}
-      node.__psUI?.previewFile?.();
-      // Let all newly created/copied images finish allocating before reporting
-      // duplicates; a batch of six valid nodes must not emit transient warnings.
-      queueMicrotask(()=>checkNodes(app));
+      if(kind(node)==='VP_SendToPS'&&graphNodes(app.rootGraph||app.graph).some(n=>n!==node&&kind(n)==='VP_SendToPS'&&value(n,'result_id')===value(node,'result_id')))
+        commitChange(node,{result_id:'result-'+crypto.randomUUID()},{source:'restore'});
+      reconcileShared(app.rootGraph||app.graph,node);
+      node.__psUI?.previewFile?.();checkNodes(app);
     });
   },
   loadedGraphNode(node) {installNode(node,app,api);refreshNode(node);node.__psUI?.previewFile?.();},
-  beforeConfigureGraph() {configuring=true;changed(app.rootGraph||app.graph);editorFor(app).close();clearPreviews();disposeNativeImagePreviews(app);testMode.changedGraph().catch(()=>{});},
-  afterConfigureGraph() {configuring=false;for(const node of graphNodes(app.rootGraph||app.graph))node.__psUI?.syncInputs();checkNodes(app);testMode.follow();renderTestMode();},
+  beforeConfigureGraph() {testOperation=null;configuring=true;changed(app.rootGraph||app.graph);editorFor(app).close();clearPreviews();disposeNativeImagePreviews(app);testMode.changedGraph().catch(()=>{});},
+  afterConfigureGraph() {configuring=false;reconcileResultIds(app.rootGraph||app.graph);const normalized=reconcileShared(app.rootGraph||app.graph);if(normalized.length)notify("已统一工作流中的共享参数："+normalized.join(", "));for(const node of graphNodes(app.rootGraph||app.graph))node.__psUI?.syncInputs();checkNodes(app);testMode.follow();renderTestMode();},
   getNodeMenuItems(node) {
     if(!NODE_TYPES.includes(kind(node)))return [];
     return [{content:"PS Vplugins · "+t(status),disabled:true}];
   },
   async setup() {
     installStyle();
-    installCanvasInteractions(app);
     installNodeMenuOrder(LiteGraph);
     renderTestMode=installTestModeToolbar(testMode);
     testMode.subscribe().catch(error=>{testMode.error=error.message;renderTestMode();});
     document.addEventListener("ps-vplugins:edit",event=>{
       const {node,changes,definition}=event.detail;
-      if(definition){clearPreviews(true);testMode.invalidate().catch(e=>notify(e.message,"error"));testMode.follow({delay:300});return;}
+      if(definition){clearPreviews(true);reportEdit(testMode.invalidate());testMode.follow({delay:300});return;}
       client.edit(node,changes);
-      clearTimeout(client.flushTimer);client.flushTimer=setTimeout(()=>client.flush().catch(e=>notify(e.message,"error")),120);
+      clearTimeout(client.flushTimer);client.flushTimer=setTimeout(()=>reportEdit(client.flush()),120);
     });
     document.addEventListener("ps-vplugins:compositionend",()=>{
-      client.flush().then(()=>client.applyCurrent())
-        .catch(error=>notify(error.message,"error"));
+      const generation=client.generation;
+      reportEdit(client.flush().then(()=>{if(generation===client.generation)client.applyCurrent();}));
     });
     setInterval(async()=>{
       if((!client.session&&!testMode.owned&&!testMode.exitPending)||heartbeatBusy||

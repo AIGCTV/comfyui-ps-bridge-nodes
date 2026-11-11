@@ -383,8 +383,6 @@ class BridgeManager:
         require(envelope.get("sourceClientId") == client.client_id and self.clients.get(client.client_id) is client,
                 "FORBIDDEN", "Transport client identity mismatch", status=403)
         validate_shape("clientMessage", envelope)
-        require(isinstance(envelope.get("messageId"), str) and envelope["messageId"] and isinstance(envelope.get("payload"), dict),
-                "MESSAGE_INVALID", "Envelope requires messageId and payload")
         kind, payload = envelope.get("type"), envelope["payload"]
         self.loop = asyncio.get_running_loop()
         self.notifications.bind()

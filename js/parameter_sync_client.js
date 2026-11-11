@@ -69,7 +69,7 @@ export class ParameterSyncClient {
     })().finally(()=>this.connection=null);
     return this.connection;
   }
-  failTransport(socket,error=new Error(t("Bridge disconnected. Attach again"))) {
+  failTransport(socket,error) {
     if(this.socket!==socket)return;
     this.socket=undefined;
     for(const p of this.pending.values()){clearTimeout(p.timer);p.reject(error);}
@@ -139,9 +139,6 @@ export class ParameterSyncClient {
       &&message.serverEpoch===this.session.serverEpoch&&message.attachToken===this.session.attachToken) {
       this.execution?.receive(message.payload);
     } else if(message.type==="editor.pipeline"&&this.matches(message)) {
-      if(message.payload.kind==="snapshot"&&!("editorExecution" in message.payload))
-        this.execution?.unavailable("执行反馈版本不匹配，请更新完整节点包、重启 ComfyUI 并刷新浏览器。");
-      if(message.payload.editorExecution)this.execution?.receive(message.payload.editorExecution);
       this.pipeline.receive(message.payload);
     } else if(message.type==="media.preview"&&this.matches(message)) {
       if(this.pipeline.active&&message.payload.runId!==this.pipeline.active.runId)this.pipeline.reset();

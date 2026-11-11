@@ -12,6 +12,36 @@ from .parameters import configured_fields
 from .protocol import NODE_CATALOG, LEGACY_NODES
 
 
+def prepare_native_shared(data):
+    """ComfyUI's public on-prompt hook freezes one value per shared source.
+
+    Prepared Bridge runs already own an immutable snapshot and must remain exact.
+    Only the submitted API copy is changed; the saved workflow keeps random mode.
+    """
+    import copy
+    import secrets
+    from .protocol import BRIDGE_MAX_SEED
+    if not isinstance(data, dict) or not isinstance(data.get('prompt'), dict):
+        return data
+    if data.get('extra_data', {}).get('extra_pnginfo', {}).get('ps_bridge_v3'):
+        return data
+    result = copy.deepcopy(data)
+    groups = {}
+    for node in result['prompt'].values():
+        kind, inputs = node.get('class_type'), node.get('inputs', {})
+        for name, _, schema in configured_fields(kind, inputs):
+            source = (schema['source']['kind'], schema['source']['key'])
+            if source not in groups:
+                fields = {name: schema['default']}
+                if kind == 'VP_Seed':
+                    fields.update(value=secrets.randbelow(BRIDGE_MAX_SEED + 1) if inputs['mode'] == 'random' else inputs[name], mode='fixed')
+                if kind == 'VP_Slider':
+                    fields.update({field: inputs[field] for field in ('min', 'max', 'step')})
+                groups[source] = fields
+            inputs.update(groups[source])
+    return result
+
+
 def validate_native_prompt(data):
     prompt = data.get('prompt') if isinstance(data, dict) else None
     if not isinstance(prompt, dict):

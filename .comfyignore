@@ -53,3 +53,8 @@ tools/
 .gitattributes
 .comfyignore
 RELEASE_MANIFEST.md
+
+# Retired implementations are archived, never shipped or auto-loaded.
+legacy/
+js/docs/Adv_Request.md
+js/docs/Adv_SendToPS.md

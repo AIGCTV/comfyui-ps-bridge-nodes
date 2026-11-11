@@ -2,7 +2,7 @@ import {t} from "./i18n.js";
 /** Test domain v3: explicit mode, active root workflow following, atomic capture. */
 import { exportWorkflow, draftChanged } from "./workflow_export.js";
 import { stable } from "./parameter_sync_client.js";
-import { graphNodes } from "./node_bindings.js";
+import { graphNodes, parameterTargets, NODE_TYPES, kind } from "./node_bindings.js";
 import {bindExportedNodes,exportedNodeId} from "./export_bindings.js";
 
 export class TestModeClient {
@@ -190,6 +190,8 @@ export class TestModeClient {
         if(!this.tabIds.has(tab.key))this.tabIds.set(tab.key,crypto.randomUUID());
         this.graphId=this.tabIds.get(tab.key);
         const unchanged=this.draftGuard({parameters:[],runtimeTargets:[]});
+        if(!graphNodes(this.app.rootGraph||this.app.graph).some(n=>NODE_TYPES.includes(kind(n))))
+          throw Object.assign(new Error("当前工作流不包含comfyui ps bridge nodes节点"),{detail:{code:"NO_BRIDGE_NODES"}});
         const graph=await this.exported();if(!current())return;
         if(!unchanged())throw draftChanged("Workflow changed during export");
         const result=await this.client.http("/workflows/inspect",{...graph,metadata});if(!current())return;
@@ -212,10 +214,21 @@ export class TestModeClient {
         if(!current())return;
         this.client.abandon?.();
         const detail=error.detail||{};
-        if(detail.retryable||["DRAFT_CHANGED","DRAFT_PENDING","REVISION_CONFLICT"].includes(detail.code)) {
+        if(detail.code==='DRAFT_PENDING') {
+          this.error=null;this.failedProbe=this.definitionProbe({parameters:[],runtimeTargets:[]});
+          await this.mutate('test.invalidate',{status:'unavailable'}).catch(()=>{});
+          this.onChange();return;
+        }
+        if(detail.retryable||["DRAFT_CHANGED","REVISION_CONFLICT"].includes(detail.code)) {
           this.error=null;
           await this.mutate("test.invalidate",{status:"switching"}).catch(()=>{});
           this.rememberSwitchBarrier();this.follow({delay:300});this.onChange();return;
+        }
+        if(detail.code==="NO_BRIDGE_NODES") {
+          this.error=null;this.failedProbe=this.definitionProbe({parameters:[],runtimeTargets:[]});
+          await this.mutate("test.invalidate",{status:"unavailable",error:{code:"NO_BRIDGE_NODES",message:error.message,retryable:false}});
+          this.app.extensionManager?.toast?.add({severity:"info",summary:"PS Vplugins",detail:error.message,life:4000});
+          this.onChange();return;
         }
         const message=detail.field?`${error.message} (${detail.field})`:error.message;
         this.error=message;
@@ -238,9 +251,10 @@ export class TestModeClient {
     this.timer=setTimeout(resume,delay);
   }
   definition(graph,manifest) {
-    const api=structuredClone(graph.api);
+    const api=JSON.parse(JSON.stringify(graph.api));
     for(const node of Object.values(api))delete node._meta;
-    for(const p of manifest.parameters) {
+    for(const parameter of manifest.parameters) for(const target of parameterTargets(parameter)) {
+      const p={...parameter,target,modeTarget:parameter.modeTarget?{nodeId:target.nodeId,inputName:"mode"}:null};
       if(!api[p.target.nodeId])return "missing";
       api[p.target.nodeId].inputs[p.target.inputName]=p.default;
       if(p.modeTarget)api[p.modeTarget.nodeId].inputs[p.modeTarget.inputName]=p.defaultMode;
@@ -287,7 +301,7 @@ export class TestModeClient {
   definitionProbe(manifest) {
     const ignored=new Map();
     const ignore=(id,name)=>{const key=String(id);if(!ignored.has(key))ignored.set(key,new Set());ignored.get(key).add(name);};
-    for(const p of manifest.parameters){ignore(p.target.nodeId,p.target.inputName);if(p.modeTarget)ignore(p.modeTarget.nodeId,p.modeTarget.inputName);}
+    for(const p of manifest.parameters)for(const target of parameterTargets(p)){ignore(target.nodeId,target.inputName);if(p.modeTarget)ignore(target.nodeId,"mode");}
     for(const p of manifest.runtimeTargets)ignore(p.nodeId,p.inputName);
     return stable(graphNodes(this.app.rootGraph||this.app.graph).map(n=>({id:n.id,type:n.comfyClass||n.type,mode:n.mode,
       inputs:n.inputs?.map(p=>({name:p.name,type:p.type,link:p.link})),properties:n.properties,
